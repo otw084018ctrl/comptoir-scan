@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>COMPTOIR 相機掃描</title>
+<style>
+  :root {
+    --over: #2a78d6; --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --ink: #ffffff; --ink-2: rgba(255,255,255,.72); --ink-muted: rgba(255,255,255,.5);
+    --surface: rgba(20,20,20,.72); --line: rgba(255,255,255,.16);
+    --radius-lg: 16px; --radius-md: 12px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body { margin: 0; background: #000; color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+    overflow: hidden; -webkit-font-smoothing: antialiased; }
+  button, input { font: inherit; color: inherit; }
+
+  #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+
+  .veil { position: fixed; inset: 0; box-shadow: inset 0 0 0 2000px rgba(0,0,0,.35); pointer-events: none; }
+
+  header { position: fixed; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
+    padding: calc(env(safe-area-inset-top) + 12px) 14px 12px; background: linear-gradient(rgba(0,0,0,.55), transparent); }
+  .hdr-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+  .hdr-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px rgba(12,163,12,.3); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+  .hdr-sub { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+  #closeBtn { width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.16); border: 0; color: #fff;
+    display: flex; align-items: center; justify-content: center; }
+  #closeBtn svg { width: 18px; height: 18px; }
+
+  .frame { position: fixed; left: 8%; right: 8%; top: 30%; bottom: 34%; border: 2.5px solid rgba(255,255,255,.9); border-radius: 18px; z-index: 3; pointer-events: none; }
+  .frame::before, .frame::after { content: ''; position: absolute; width: 28px; height: 28px; border-color: var(--over); border-style: solid; }
+  .frame::before { left: -2.5px; top: -2.5px; border-width: 4px 0 0 4px; border-top-left-radius: 14px; }
+  .frame::after { right: -2.5px; bottom: -2.5px; border-width: 0 4px 4px 0; border-bottom-right-radius: 14px; }
+  .scanline { position: fixed; left: 10%; right: 10%; height: 2px; z-index: 3; top: 31%;
+    background: linear-gradient(90deg, transparent, var(--over), transparent); animation: sweep 2s ease-in-out infinite; pointer-events: none; }
+  @keyframes sweep { 0%,100% { top: 31%; } 50% { top: 65%; } }
+
+  .flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 4; }
+  .flash.go { animation: flashgo .28s ease; }
+  @keyframes flashgo { 0% { opacity: 0; } 25% { opacity: .5; } 100% { opacity: 0; } }
+
+  .hint { position: fixed; left: 0; right: 0; z-index: 5; text-align: center; color: var(--ink-2); font-size: 13px; padding: 0 28px; bottom: 34%; margin-bottom: -34px; }
+
+  .center-msg { position: fixed; inset: 0; z-index: 6; display: none; align-items: center; justify-content: center; flex-direction: column;
+    gap: 14px; padding: 32px; text-align: center; background: rgba(0,0,0,.55); }
+  .center-msg.show { display: flex; }
+  .center-msg svg { width: 40px; height: 40px; color: var(--warning); }
+  .center-msg h2 { margin: 0; font-size: 17px; }
+  .center-msg p { margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; max-width: 320px; }
+  .center-msg button { margin-top: 6px; padding: 12px 22px; border-radius: 999px; border: 1px solid rgba(255,255,255,.35); background: rgba(255,255,255,.12); font-weight: 700; }
+
+  .toast { position: fixed; left: 50%; top: 16%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 8px;
+    padding: 11px 18px; border-radius: 999px; font-size: 14px; font-weight: 700; opacity: 0; transition: opacity .18s; max-width: 84%; }
+  .toast.show { opacity: 1; }
+  .toast.ok { background: rgba(12,163,12,.94); }
+  .toast.warn { background: rgba(250,178,25,.94); color: #241900; }
+  .toast.bad { background: rgba(208,59,59,.94); }
+  .toast svg { width: 15px; height: 15px; flex: none; }
+  .toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .bottom { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+    background: linear-gradient(transparent, rgba(0,0,0,.6)); }
+  .stats-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .stat-pill { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 9px 6px; text-align: center; backdrop-filter: blur(8px); }
+  .stat-pill b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stat-pill span { font-size: 10.5px; color: var(--ink-2); }
+  .manual-row { display: none; gap: 8px; margin-bottom: 10px; }
+  .manual-row.show { display: flex; }
+  #manualInput { flex: 1; padding: 13px 14px; border-radius: var(--radius-md); border: 1.5px solid var(--line); background: var(--surface);
+    color: #fff; font-size: 16px; backdrop-filter: blur(8px); }
+  #manualInput::placeholder { color: var(--ink-muted); }
+  .action-row { display: flex; gap: 8px; }
+  .action-row button { flex: 1; padding: 13px; border-radius: var(--radius-md); border: 1.5px solid var(--line); background: var(--surface);
+    color: #fff; font-weight: 700; font-size: 14px; display: flex; align-items: center; justify-content: center; gap: 6px; backdrop-filter: blur(8px); }
+  .action-row button svg { width: 16px; height: 16px; }
+  .action-row button.on { background: var(--over); border-color: var(--over); }
+  .sync-note { text-align: center; font-size: 11px; color: var(--ink-muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+<video id="video" muted playsinline autoplay></video>
+<div class="veil"></div>
+<div class="frame"></div>
+<div class="scanline"></div>
+<div class="hint">將條碼對準框內，會自動連續掃描</div>
+<div class="flash" id="flash"></div>
+<div class="toast" id="toast"></div>
+
+<header>
+  <div>
+    <div class="hdr-title"><span class="hdr-dot"></span><span id="locLabel">相機掃描</span></div>
+    <div class="hdr-sub" id="who"></div>
+  </div>
+  <button id="closeBtn" type="button"></button>
+</header>
+
+<div class="center-msg" id="centerMsg">
+  <div id="centerIcon"></div>
+  <h2 id="centerTitle">正在啟動相機…</h2>
+  <p id="centerText">請允許瀏覽器使用相機權限</p>
+  <button id="centerBtn" type="button" hidden></button>
+</div>
+
+<div class="bottom">
+  <div class="stats-row">
+    <div class="stat-pill"><b id="stTotal">0</b><span>這次已掃件數</span></div>
+    <div class="stat-pill"><b id="stSku">0</b><span>款數</span></div>
+    <div class="stat-pill" id="stPendBox"><b id="stPend">0</b><span>待同步</span></div>
+  </div>
+  <div class="manual-row" id="manualRow">
+    <input id="manualInput" type="text" inputmode="text" placeholder="手動輸入條碼，按 Enter 送出" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+  </div>
+  <div class="action-row">
+    <button id="manualToggle" type="button"></button>
+    <button id="doneBtn" type="button"></button>
+  </div>
+  <div class="sync-note" id="syncNote"></div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var qs = new URLSearchParams(location.search);
+  var BASE = qs.get('base') || '';
+  var TOKEN = qs.get('token') || '';
+  var LOC = qs.get('loc') || '';
+  var WHO = qs.get('who') || '';
+  var LABEL = qs.get('label') || LOC;
+
+  var ICON = {
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+    warn:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.6 1.8 18a1 1 0 0 0 .9 1.5h18.6a1 1 0 0 0 .9-1.5L13.7 3.6a1 1 0 0 0-1.7 0Z"/><path d="M12 9v4M12 17h.01"/></svg>',
+    cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+    keyboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"/></svg>',
+    check2: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
+  };
+  $('closeBtn').innerHTML = ICON.cross;
+  $('manualToggle').innerHTML = ICON.keyboard + '<span>手動輸入</span>';
+  $('doneBtn').innerHTML = ICON.check2 + '<span>完成，關閉</span>';
+  $('locLabel').textContent = LABEL + ' · 相機掃描';
+  $('who').textContent = WHO ? ('盤點人：' + WHO) : '';
+
+  function showCenter(iconKey, title, text, btnLabel, onBtn) {
+    $('centerIcon').innerHTML = ICON[iconKey] || ICON.warn;
+    $('centerTitle').textContent = title;
+    $('centerText').textContent = text || '';
+    var btn = $('centerBtn');
+    if (btnLabel) { btn.hidden = false; btn.textContent = btnLabel; btn.onclick = onBtn; }
+    else { btn.hidden = true; btn.onclick = null; }
+    $('centerMsg').classList.add('show');
+  }
+  function hideCenter() { $('centerMsg').classList.remove('show'); }
+
+  if (!BASE || !TOKEN || !LOC) {
+    showCenter('warn', '缺少必要參數', '請從主頁面的「相機掃描」按鈕開啟這個頁面，不要直接輸入網址。');
+    return;
+  }
+
+  /* ---------- 狀態 ---------- */
+  var S = { names: {}, stock: {}, counts: {}, queue: [], inflight: null, ready: false, lastCode: null, lastAt: 0 };
+  var LSKEY = 'camq_' + LOC;
+  var LS = {
+    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+  function clean(v) { return String(v == null ? '' : v).replace(/\*/g, '').trim(); }
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+  /* ---------- 音效 / 震動 ---------- */
+  var ac = null;
+  function tone(freq, start, dur, type, gain) {
+    var o = ac.createOscillator(), g = ac.createGain();
+    o.connect(g); g.connect(ac.destination);
+    o.type = type || 'sine'; o.frequency.setValueAtTime(freq, ac.currentTime + start);
+    g.gain.setValueAtTime(0, ac.currentTime + start);
+    g.gain.linearRampToValueAtTime(gain || 0.14, ac.currentTime + start + 0.01);
+    g.gain.linearRampToValueAtTime(0, ac.currentTime + start + dur);
+    o.start(ac.currentTime + start); o.stop(ac.currentTime + start + dur + 0.02);
+  }
+  function feedback(kind) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      if (ac.state === 'suspended') ac.resume();
+      if (kind === 'ok') { tone(1046, 0, .07, 'sine', .13); tone(1568, .06, .09, 'sine', .11); }
+      else if (kind === 'warn') { tone(660, 0, .1, 'triangle', .14); tone(660, .13, .1, 'triangle', .14); }
+      else { tone(220, 0, .18, 'sawtooth', .11); }
+    } catch (e) {}
+    if (kind === 'warn' && navigator.vibrate) navigator.vibrate(60);
+    if (kind === 'bad' && navigator.vibrate) navigator.vibrate([90, 60, 90]);
+    if (kind === 'ok' && navigator.vibrate) navigator.vibrate(30);
+  }
+
+  var toastTimer;
+  function toast(kind, msg) {
+    var t = $('toast');
+    t.className = 'toast show ' + kind;
+    t.innerHTML = (kind === 'ok' ? ICON.check : kind === 'warn' ? ICON.warn : ICON.cross) + '<span>' + msg + '</span>';
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.className = 'toast'; }, 1100);
+  }
+
+  function render() {
+    var total = 0, sku = 0;
+    for (var c in S.counts) { if (S.counts[c] > 0) { total += S.counts[c]; sku++; } }
+    $('stTotal').textContent = total; $('stSku').textContent = sku;
+    var pend = S.queue.length + (S.inflight ? S.inflight.length : 0);
+    $('stPend').textContent = pend;
+    $('stPendBox').style.color = pend > 0 ? '#fab219' : '';
+  }
+
+  /* ---------- 送出掃描（跟主頁面共用同一套後端 API）---------- */
+  function persist() { LS.set(LSKEY, JSON.stringify(S.queue.concat(S.inflight || []))); }
+
+  function apiPost(payload) {
+    return fetch(BASE, { method: 'POST', body: JSON.stringify(payload) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (!j.ok) throw new Error(j.error || '伺服器回傳失敗'); return j.data; });
+  }
+  function apiGet(action, extra) {
+    var u = BASE + '?action=' + action + '&token=' + encodeURIComponent(TOKEN) + '&loc=' + encodeURIComponent(LOC) + (extra || '');
+    return fetch(u).then(function (r) { return r.json(); }).then(function (j) { if (!j.ok) throw new Error(j.error || '伺服器回傳失敗'); return j.data; });
+  }
+
+  function flush() {
+    if (S.inflight || !S.queue.length) return;
+    var batch = S.queue.splice(0, 50);
+    S.inflight = batch; render();
+    apiPost({ token: TOKEN, action: 'appendScans', user: WHO, scans: batch.map(function (x) { return { id: x.id, t: x.t, loc: x.loc, code: x.code, name: x.name }; }) })
+      .then(function () { S.inflight = null; persist(); render(); flush(); })
+      .catch(function () {
+        S.queue = batch.concat(S.queue); S.inflight = null;
+        persist(); render(); toast('bad', '同步失敗，將自動重試'); setTimeout(flush, 4000);
+      });
+  }
+
+  function onHit(raw) {
+    var code = clean(raw);
+    if (!code) return;
+    var now = Date.now();
+    if (code === S.lastCode && now - S.lastAt < 1500) return;
+    S.lastCode = code; S.lastAt = now;
+    var flash = $('flash'); flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
+
+    var name = S.names[code];
+    S.counts[code] = (S.counts[code] || 0) + 1;
+    var scan = { id: uid(), t: now, loc: LOC, code: code, name: name || '庫存表無此條碼' };
+    S.queue.push(scan); persist(); flush(); render();
+
+    if (!name) { toast('bad', '查無此條碼 ' + code); feedback('bad'); return; }
+    var need = S.stock[code] || 0, got = S.counts[code];
+    var kind = got > need ? 'warn' : 'ok';
+    toast(kind, name + '　已掃 ' + got + '／應有 ' + need);
+    feedback(kind);
+  }
+
+  /* ---------- 定期跟伺服器同步已掃數量（多人同時盤點）---------- */
+  function pollCounts() {
+    apiGet('counts').then(function (serverCounts) {
+      var merged = {};
+      Object.keys(serverCounts || {}).forEach(function (c) { merged[c] = serverCounts[c]; });
+      S.queue.concat(S.inflight || []).forEach(function (x) { merged[x.code] = (merged[x.code] || 0) + 1; });
+      S.counts = merged; render();
+      $('syncNote').textContent = '已與伺服器同步';
+    }).catch(function () {});
+  }
+
+  /* ---------- 相機 ---------- */
+  var mediaStream = null, rafId = null, zxingReader = null, useNative = false;
+
+  function stopCamera() {
+    if (rafId) cancelAnimationFrame(rafId);
+    if (zxingReader) { try { zxingReader.reset(); } catch (e) {} zxingReader = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
+  }
+
+  function loopNativeDetect(detector) {
+    var video = $('video');
+    (function tick() {
+      if (video.readyState >= 2) {
+        detector.detect(video).then(function (codes) {
+          if (codes && codes.length) onHit(codes[0].rawValue);
+        }).catch(function () {});
+      }
+      rafId = requestAnimationFrame(tick);
+    })();
+  }
+
+  function loadZXing() {
+    return new Promise(function (resolve, reject) {
+      if (window.ZXing) return resolve();
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js';
+      s.onload = resolve; s.onerror = function () { reject(new Error('相機掃描套件載入失敗（可能是網路問題）')); };
+      document.head.appendChild(s);
+    });
+  }
+
+  function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showCenter('warn', '此瀏覽器不支援相機', '請改用下方「手動輸入」，或用掃描槍搭配主頁面。');
+      $('manualRow').classList.add('show'); $('manualToggle').classList.add('on');
+      return;
+    }
+    showCenter('warn', '正在啟動相機…', '請允許瀏覽器使用相機權限');
+
+    var nativeOk = false;
+    if ('BarcodeDetector' in window) {
+      try {
+        var testDetector = new window.BarcodeDetector({
+          formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar', 'qr_code']
+        });
+        nativeOk = true;
+      } catch (e) { nativeOk = false; }
+    }
+    if (nativeOk) {
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } })
+        .then(function (stream) {
+          mediaStream = stream; $('video').srcObject = stream;
+          useNative = true; hideCenter();
+          loopNativeDetect(testDetector);
+        })
+        .catch(function (e) { cameraFailed(e); });
+    } else {
+      loadZXing().then(function () {
+        zxingReader = new ZXing.BrowserMultiFormatReader();
+        return zxingReader.decodeFromConstraints(
+          { video: { facingMode: { ideal: 'environment' } } },
+          $('video'),
+          function (result) { if (result) onHit(result.getText()); }
+        );
+      }).then(function () { hideCenter(); }).catch(function (e) { cameraFailed(e); });
+    }
+  }
+
+  function cameraFailed(e) {
+    var msg = (e && e.message) || '無法存取相機';
+    showCenter('warn', '無法開啟相機', msg + '\n可以改用下方「手動輸入」繼續盤點。', '改用手動輸入', function () {
+      hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
+    });
+  }
+
+  /* ---------- 手動輸入 ---------- */
+  $('manualToggle').onclick = function () {
+    var on = $('manualRow').classList.toggle('show');
+    $('manualToggle').classList.toggle('on', on);
+    if (on) $('manualInput').focus();
+  };
+  $('manualInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); var v = $('manualInput').value; $('manualInput').value = ''; onHit(v); }
+  });
+
+  $('closeBtn').onclick = $('doneBtn').onclick = function () {
+    stopCamera();
+    if (S.queue.length || S.inflight) {
+      $('doneBtn').disabled = true;
+      var tries = 0;
+      (function wait() {
+        flush();
+        if ((!S.queue.length && !S.inflight) || tries++ > 30) { window.close(); setTimeout(function () { location.href = 'about:blank'; }, 300); }
+        else setTimeout(wait, 300);
+      })();
+    } else {
+      window.close(); setTimeout(function () { location.href = 'about:blank'; }, 300);
+    }
+  };
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) stopCamera(); else if (!mediaStream && !zxingReader) startCamera();
+  });
+  window.addEventListener('beforeunload', function (e) {
+    if (S.queue.length || S.inflight) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  /* ---------- 啟動 ---------- */
+  try { S.queue = JSON.parse(LS.get(LSKEY) || '[]') || []; } catch (e) { S.queue = []; }
+
+  apiGet('scanBootstrap').then(function (data) {
+    S.names = data.names || {}; S.stock = data.stock || {}; S.counts = data.counts || {};
+    S.queue.concat(S.inflight || []).forEach(function (x) { S.counts[x.code] = (S.counts[x.code] || 0) + 1; });
+    S.ready = true; render();
+    $('syncNote').textContent = '已與伺服器同步';
+    startCamera();
+    flush();
+    setInterval(pollCounts, 20000);
+  }).catch(function (e) {
+    showCenter('warn', '連線失敗', (e && e.message) || '無法連上盤點系統，請確認網路連線後重新整理頁面。');
+  });
+})();
+</script>
+</body>
+</html>
