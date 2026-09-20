@@ -57,6 +57,7 @@
     display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); font-size: 19px; font-weight: 700; }
   .tool-btn svg { width: 20px; height: 20px; }
   .tool-btn.on { background: var(--over); border-color: var(--over); }
+  .capture-btn { background: var(--over); border-color: var(--over); width: 50px; height: 50px; }
 
   .center-msg { position: fixed; inset: 0; z-index: 6; display: none; align-items: center; justify-content: center; flex-direction: column;
     gap: 14px; padding: 32px; text-align: center; background: rgba(0,0,0,.55); }
@@ -102,6 +103,7 @@
 <div class="scanline"></div>
 <div class="hint">請保持條碼「水平」並對準中心</div>
 <div class="cam-tools" id="camTools">
+  <button id="captureBtn" type="button" class="tool-btn capture-btn" title="精準拍照掃描"></button>
   <button id="torchBtn" type="button" class="tool-btn" hidden></button>
   <button id="zoomInBtn" type="button" class="tool-btn" hidden>﹢</button>
   <button id="zoomOutBtn" type="button" class="tool-btn" hidden>﹣</button>
@@ -157,12 +159,14 @@
     cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
     keyboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"/></svg>',
     check2: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
-    bolt: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 2 3 14h7l-1 8 11-14h-7l0-6Z"/></svg>'
+    bolt: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 2 3 14h7l-1 8 11-14h-7l0-6Z"/></svg>',
+    camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="3.4"/></svg>'
   };
   $('closeBtn').innerHTML = ICON.cross;
   $('manualToggle').innerHTML = ICON.keyboard + '<span>手動輸入</span>';
   $('doneBtn').innerHTML = ICON.check2 + '<span>完成，關閉</span>';
   $('torchBtn').innerHTML = ICON.bolt;
+  $('captureBtn').innerHTML = ICON.camera;
   $('locLabel').textContent = LABEL + ' · 相機掃描';
   $('who').textContent = WHO ? ('盤點人：' + WHO) : '';
 
@@ -292,34 +296,90 @@
   var mediaStream = null, rafId = null, nativeDetector = null, isScanning = false;
   var zxingLoadPromise = null;
 
-  function frameRectCss() {
+  // padded = true 時，解碼範圍會比畫面上看到的白框稍微再大一圈，
+  // 讓條碼沒有完全對準框線時也還是掃得到（連續掃描用小一點的框求快，
+  // 拍照掃描用大一點的框求容錯）。
+  function frameRectCss(padded) {
     var vw = window.innerWidth, vh = window.innerHeight;
     var h = Math.max(92, Math.min(vh * 0.30, 220));
     var w = vw * 0.84;
-    var x = vw * 0.08;
+    if (padded) { w = Math.min(vw * 0.97, w * 1.18); h = Math.min(vh * 0.9, h * 1.5); }
+    var x = (vw - w) / 2;
     var y = (vh - h) / 2;
     return { x: x, y: y, w: w, h: h, vw: vw, vh: vh };
   }
 
-  // 把畫面裁切成「只剩下白框裡的區域」再拿去解碼，而不是整張相機畫面。
-  // 要反推 object-fit: cover 的縮放/置中位移，才能正確對應回原始相機像素座標。
-  function cropToFrame(video, canvas, ctx) {
-    var vw = video.videoWidth, vh = video.videoHeight;
-    var rect = frameRectCss();
-    if (!vw || !vh || !rect.vw || !rect.vh) return false;
-    var scale = Math.max(rect.vw / vw, rect.vh / vh);
-    var dispW = vw * scale, dispH = vh * scale;
+  // 把畫面裁切成「只剩下白框裡（或稍微再大一圈）的區域」再拿去解碼，而不是整張相機畫面。
+  // 要反推 object-fit: cover 的縮放/置中位移，才能正確對應回原始畫面像素座標。
+  // source 可以是 <video> 也可以是拍照後的 ImageBitmap，只要有寬高即可。
+  function cropSourceToFrame(source, srcW, srcH, canvas, ctx, padded) {
+    var rect = frameRectCss(padded);
+    if (!srcW || !srcH || !rect.vw || !rect.vh) return false;
+    var scale = Math.max(rect.vw / srcW, rect.vh / srcH);
+    var dispW = srcW * scale, dispH = srcH * scale;
     var offX = (dispW - rect.vw) / 2, offY = (dispH - rect.vh) / 2;
     var sx = (rect.x + offX) / scale;
     var sy = (rect.y + offY) / scale;
     var sw = rect.w / scale;
     var sh = rect.h / scale;
     sx = Math.max(0, sx); sy = Math.max(0, sy);
-    sw = Math.min(sw, vw - sx); sh = Math.min(sh, vh - sy);
+    sw = Math.min(sw, srcW - sx); sh = Math.min(sh, srcH - sy);
     if (sw <= 4 || sh <= 4) return false;
     canvas.width = sw; canvas.height = sh;
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, sw, sh);
     return true;
+  }
+
+  function cropToFrame(video, canvas, ctx) {
+    return cropSourceToFrame(video, video.videoWidth, video.videoHeight, canvas, ctx, false);
+  }
+
+  function decodeSource(canvas, ctx) {
+    if (nativeDetector) {
+      return nativeDetector.detect(canvas).then(function (codes) {
+        return codes && codes.length ? codes[0].rawValue : null;
+      });
+    }
+    var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    return decodeWithZxing(imageData).then(function (results) {
+      return results && results.length ? results[0].text : null;
+    });
+  }
+
+  // 手動「精準拍照」：給連續掃描抓不到的疑難條碼多一個機會——
+  // 拍一張畫質更好、範圍容錯更大的照片，讓使用者可以停下來仔細對準再試一次。
+  // 有支援 ImageCapture 的手機（多為 Android）可以拿到比錄影畫面更高解析度的原始照片；
+  // iPhone Safari 目前沒有 ImageCapture，會退回用當下這一幀畫面，但仍受益於「較大容錯範圍＋不趕時間仔細解碼」。
+  function capturePhotoAndDecode() {
+    if (!mediaStream) return;
+    var track = mediaStream.getVideoTracks()[0];
+    showCenter('warn', '拍照中…', '請保持條碼在框內、手不要動');
+
+    var getBitmap;
+    if (window.ImageCapture && track) {
+      try {
+        var ic = new window.ImageCapture(track);
+        getBitmap = ic.takePhoto().then(function (blob) { return createImageBitmap(blob); });
+      } catch (e) { getBitmap = createImageBitmap($('video')); }
+    } else {
+      getBitmap = createImageBitmap($('video'));
+    }
+
+    getBitmap.then(function (bitmap) {
+      var canvas = document.createElement('canvas');
+      var ctx = canvas.getContext('2d', { willReadFrequently: true });
+      var ok = cropSourceToFrame(bitmap, bitmap.width, bitmap.height, canvas, ctx, true);
+      if (bitmap.close) bitmap.close();
+      if (!ok) { hideCenter(); toast('warn', '拍照失敗，請再試一次'); return null; }
+      return decodeSource(canvas, ctx);
+    }).then(function (text) {
+      hideCenter();
+      if (text) onHit(text);
+      else if (text !== null) toast('warn', '拍照後仍辨識不到，請調整距離、角度或光線再試');
+    }).catch(function (e) {
+      hideCenter();
+      toast('bad', '拍照失敗：' + ((e && e.message) || e));
+    });
   }
 
   function hideCamTools() {
@@ -396,18 +456,7 @@
       if (!busy && video.readyState >= 2 && now - lastTry > 150) {
         if (cropToFrame(video, canvas, ctx)) {
           lastTry = now; busy = true;
-          var work;
-          if (nativeDetector) {
-            work = nativeDetector.detect(canvas).then(function (codes) {
-              return codes && codes.length ? codes[0].rawValue : null;
-            });
-          } else {
-            var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            work = decodeWithZxing(imageData).then(function (results) {
-              return results && results.length ? results[0].text : null;
-            });
-          }
-          work.then(function (text) {
+          decodeSource(canvas, ctx).then(function (text) {
             if (text) onHit(text);
             $('debugNote').textContent = '引擎：' + engineLabel + '　畫面 ' + video.videoWidth + '×' + video.videoHeight;
           }).catch(function (e) {
@@ -470,15 +519,19 @@
       var track = stream.getVideoTracks()[0];
       try {
         var caps = track.getCapabilities ? track.getCapabilities() : {};
-        if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
-          track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {});
-        }
+        var advanced = [];
+        if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) advanced.push({ focusMode: 'continuous' });
+        if (caps.exposureMode && caps.exposureMode.indexOf('continuous') !== -1) advanced.push({ exposureMode: 'continuous' });
+        if (caps.whiteBalanceMode && caps.whiteBalanceMode.indexOf('continuous') !== -1) advanced.push({ whiteBalanceMode: 'continuous' });
+        if (advanced.length) track.applyConstraints({ advanced: advanced }).catch(function () {});
       } catch (e) {}
       setupCameraControls(track);
 
       tryNativeThenLoop();
     }).catch(function () { cameraFailed(); });
   }
+
+  $('captureBtn').onclick = capturePhotoAndDecode;
 
   $('manualToggle').onclick = function () {
     var on = $('manualRow').classList.toggle('show');
