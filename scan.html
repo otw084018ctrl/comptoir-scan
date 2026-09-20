@@ -213,7 +213,7 @@
     $('stPendBox').style.color = pend > 0 ? '#fab219' : '';
   }
 
-  /* ---------- 送出掃描（跟主頁面共用同一套後端 API）---------- */
+  /* ---------- 送出掃描 ---------- */
   function persist() { LS.set(LSKEY, JSON.stringify(S.queue.concat(S.inflight || []))); }
 
   function apiPost(payload) {
@@ -254,11 +254,11 @@
     if (!name) { toast('bad', '查無此條碼 ' + code); feedback('bad'); return; }
     var need = S.stock[code] || 0, got = S.counts[code];
     var kind = got > need ? 'warn' : 'ok';
-    toast(kind, name + '　已掃 ' + got + '／應有 ' + need);
+    toast(kind, name + ' 已掃 ' + got + '／應有 ' + need);
     feedback(kind);
   }
 
-  /* ---------- 定期跟伺服器同步已掃數量（多人同時盤點）---------- */
+  /* ---------- 定期跟伺服器同步已掃數量 ---------- */
   function pollCounts() {
     apiGet('counts').then(function (serverCounts) {
       var merged = {};
@@ -269,13 +269,7 @@
     }).catch(function () {});
   }
 
-  /* ---------- 相機 ----------
-   * 相機的取得只用瀏覽器原生 getUserMedia 這一條路（已確認能正常顯示畫面）。
-   * 解碼另外用 requestAnimationFrame 自己抓 canvas 畫面去解，
-   * 不依賴 zxing-js 內建那套「自己接管相機＋抓影格」的邏輯——
-   * 那套在部分 iOS Safari 版本上會啞掉（相機畫面正常，但完全偵測不到），
-   * 拆開來各自用最單純、最少魔法的方式做，比較不會遇到這種黑盒子問題。
-   */
+  /* ---------- 相機 ---------- */
   var mediaStream = null, rafId = null, debugTicks = 0;
 
   function stopCamera() {
@@ -304,12 +298,21 @@
     var lastTry = 0;
     (function tick() {
       var now = performance.now();
-      if (video.readyState >= 2 && now - lastTry > 180) {
+      // 把間隔拉長到 250ms，避免過載
+      if (video.readyState >= 2 && now - lastTry > 250) {
         lastTry = now;
-        var w = video.videoWidth, h = video.videoHeight;
-        if (w && h) {
-          canvas.width = w; canvas.height = h;
-          ctx.drawImage(video, 0, 0, w, h);
+        var vw = video.videoWidth, vh = video.videoHeight;
+        if (vw && vh) {
+          // 只擷取中央 70% 寬度與 40% 高度的畫面，與 UI 框框差不多
+          var cropW = vw * 0.7;
+          var cropH = vh * 0.4;
+          var startX = (vw - cropW) / 2;
+          var startY = (vh - cropH) / 2;
+          
+          canvas.width = cropW;
+          canvas.height = cropH;
+          ctx.drawImage(video, startX, startY, cropW, cropH, 0, 0, cropW, cropH);
+          
           debugTicks++;
           try {
             var result = reader.decodeFromCanvas(canvas);
@@ -339,7 +342,15 @@
     }
     showCenter('warn', '正在啟動相機…', '請允許瀏覽器使用相機權限');
 
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } })
+    // 限制解析度並加入連續對焦參數
+    navigator.mediaDevices.getUserMedia({ 
+      video: { 
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        advanced: [{ focusMode: "continuous" }]
+      } 
+    })
       .then(function (stream) {
         mediaStream = stream;
         var video = $('video');
@@ -371,8 +382,8 @@
         setInterval(function () {
           var v = $('video');
           $('debugNote').textContent = (nativeOk ? '偵測引擎：瀏覽器原生' : '偵測引擎：ZXing') +
-            '　已處理 ' + debugTicks + ' 幀' +
-            '　畫面 ' + (v.videoWidth || 0) + '×' + (v.videoHeight || 0);
+            ' 已處理 ' + debugTicks + ' 幀' +
+            ' 畫面 ' + (v.videoWidth || 0) + '×' + (v.videoHeight || 0);
         }, 1000);
       })
       .catch(function (e) { cameraFailed(e); });
