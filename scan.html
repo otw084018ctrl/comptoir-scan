@@ -18,11 +18,8 @@
     overflow: hidden; -webkit-font-smoothing: antialiased; }
   button, input { font: inherit; color: inherit; }
 
-  /* 讓掃碼引擎的容器填滿畫面 */
-  #reader { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 1; background: #000; }
-  #reader video { object-fit: cover !important; width: 100% !important; height: 100% !important; }
-  /* html5-qrcode 內建的掃描框線 UI 用不到，全部隱藏，改用我們自己畫的 .frame */
-  #reader img, #reader__dashboard, #reader__scan_region > img { display: none !important; }
+  /* 相機畫面填滿螢幕 */
+  #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; background: #000; }
 
   .veil { position: fixed; inset: 0; box-shadow: inset 0 0 0 2000px rgba(0,0,0,.35); pointer-events: none; z-index: 2; }
   .frame { position: fixed; left: 8%; right: 8%; top: 50%; height: var(--frame-h); transform: translateY(-50%);
@@ -96,12 +93,10 @@
   .action-row button.on { background: var(--over); border-color: var(--over); }
   .sync-note { text-align: center; font-size: 11px; color: var(--ink-muted); margin-top: 8px; }
 </style>
-<!-- 引入強化版掃碼引擎 Html5-Qrcode -->
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
 
-<div id="reader"></div>
+<video id="video" autoplay muted playsinline></video>
 <div class="veil"></div>
 <div class="frame"></div>
 <div class="scanline"></div>
@@ -287,15 +282,42 @@
     feedback(kind);
   }
 
-  /* ---------- 掃碼引擎：Html5-Qrcode ---------- */
-  var html5QrCode = null;
-  var FRAME_RATIO = { w: 0.84, h: 0.30, minH: 92, maxH: 220 }; // 對應 CSS .frame
+  /* ---------- 掃碼引擎：原生 BarcodeDetector（優先）／ZXing-WASM（備援） ---------- */
+  var ZXING_VER = '3.1.4';
+  var ZXING_BASE = 'https://cdn.jsdelivr.net/npm/zxing-wasm@' + ZXING_VER + '/dist/reader/';
+  var ZXING_FORMATS = ['Code128', 'Code39', 'EAN-13', 'EAN-8', 'UPC-A', 'UPC-E', 'ITF', 'Codabar'];
 
-  function stopCamera() {
-    hideCamTools();
-    if (html5QrCode && html5QrCode.isScanning) {
-      html5QrCode.stop().then(function () { html5QrCode.clear(); }).catch(function () {});
-    }
+  var mediaStream = null, rafId = null, nativeDetector = null, isScanning = false;
+  var zxingLoadPromise = null;
+
+  function frameRectCss() {
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var h = Math.max(92, Math.min(vh * 0.30, 220));
+    var w = vw * 0.84;
+    var x = vw * 0.08;
+    var y = (vh - h) / 2;
+    return { x: x, y: y, w: w, h: h, vw: vw, vh: vh };
+  }
+
+  // 把畫面裁切成「只剩下白框裡的區域」再拿去解碼，而不是整張相機畫面。
+  // 要反推 object-fit: cover 的縮放/置中位移，才能正確對應回原始相機像素座標。
+  function cropToFrame(video, canvas, ctx) {
+    var vw = video.videoWidth, vh = video.videoHeight;
+    var rect = frameRectCss();
+    if (!vw || !vh || !rect.vw || !rect.vh) return false;
+    var scale = Math.max(rect.vw / vw, rect.vh / vh);
+    var dispW = vw * scale, dispH = vh * scale;
+    var offX = (dispW - rect.vw) / 2, offY = (dispH - rect.vh) / 2;
+    var sx = (rect.x + offX) / scale;
+    var sy = (rect.y + offY) / scale;
+    var sw = rect.w / scale;
+    var sh = rect.h / scale;
+    sx = Math.max(0, sx); sy = Math.max(0, sy);
+    sw = Math.min(sw, vw - sx); sh = Math.min(sh, vh - sy);
+    if (sw <= 4 || sh <= 4) return false;
+    canvas.width = sw; canvas.height = sh;
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    return true;
   }
 
   function hideCamTools() {
@@ -303,95 +325,157 @@
     $('zoomInBtn').hidden = true; $('zoomOutBtn').hidden = true;
   }
 
-  function setupCameraControls() {
+  function setupCameraControls(track) {
     hideCamTools();
-    if (!html5QrCode || typeof html5QrCode.getRunningTrackCameraCapabilities !== 'function') return;
     try {
-      var caps = html5QrCode.getRunningTrackCameraCapabilities();
-
-      if (typeof caps.torchFeature === 'function') {
-        var torch = caps.torchFeature();
-        if (torch && torch.isSupported && torch.isSupported()) {
-          var torchOn = false;
-          $('torchBtn').hidden = false;
-          $('torchBtn').onclick = function () {
-            torchOn = !torchOn;
-            torch.apply(torchOn).catch(function () {});
-            $('torchBtn').classList.toggle('on', torchOn);
-          };
-        }
+      var caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.torch) {
+        var torchOn = false;
+        $('torchBtn').hidden = false;
+        $('torchBtn').onclick = function () {
+          torchOn = !torchOn;
+          track.applyConstraints({ advanced: [{ torch: torchOn }] }).catch(function () {});
+          $('torchBtn').classList.toggle('on', torchOn);
+        };
       }
-
-      if (typeof caps.zoomFeature === 'function') {
-        var zoom = caps.zoomFeature();
-        if (zoom && zoom.isSupported && zoom.isSupported()) {
-          var min = zoom.min(), max = zoom.max(), step = zoom.step() || 0.5;
-          var cur = (zoom.value ? zoom.value() : min) || min;
-          $('zoomInBtn').hidden = false;
-          $('zoomOutBtn').hidden = false;
-          $('zoomInBtn').onclick = function () { cur = Math.min(max, cur + step); zoom.apply(cur).catch(function () {}); };
-          $('zoomOutBtn').onclick = function () { cur = Math.max(min, cur - step); zoom.apply(cur).catch(function () {}); };
-        }
+      if (caps.zoom && caps.zoom.min != null && caps.zoom.max != null) {
+        var min = caps.zoom.min, max = caps.zoom.max, step = caps.zoom.step || 0.5, cur = min;
+        $('zoomInBtn').hidden = false; $('zoomOutBtn').hidden = false;
+        $('zoomInBtn').onclick = function () { cur = Math.min(max, cur + step); track.applyConstraints({ advanced: [{ zoom: cur }] }).catch(function () {}); };
+        $('zoomOutBtn').onclick = function () { cur = Math.max(min, cur - step); track.applyConstraints({ advanced: [{ zoom: cur }] }).catch(function () {}); };
       }
     } catch (e) {}
+  }
+
+  function stopCamera() {
+    isScanning = false;
+    hideCamTools();
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = null;
+    if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
+  }
+
+  function cameraFailed() {
+    showCenter('warn', '無法開啟相機', '請確認已允許相機權限，或改用下方「手動輸入」。', '改用手動輸入', function () {
+      hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
+    });
+  }
+
+  function loadZxingWasm() {
+    if (zxingLoadPromise) return zxingLoadPromise;
+    zxingLoadPromise = import(ZXING_BASE + 'index.js').then(function (mod) {
+      mod.prepareZXingModule({
+        overrides: { locateFile: function (path) { return path.endsWith('.wasm') ? (ZXING_BASE + path) : path; } }
+      });
+      window.__zxingReadBarcodes = mod.readBarcodes;
+      return mod;
+    });
+    return zxingLoadPromise;
+  }
+
+  function decodeWithZxing(imageData) {
+    return window.__zxingReadBarcodes(imageData, { formats: ZXING_FORMATS, tryHarder: true, maxNumberOfSymbols: 1 })
+      .catch(function () {
+        // 保底：萬一格式名稱跟目前套件版本對不上，改用不限格式再試一次，至少不會整個失效
+        return window.__zxingReadBarcodes(imageData, { tryHarder: true, maxNumberOfSymbols: 1 });
+      });
+  }
+
+  function loopDetect() {
+    var video = $('video');
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+    var busy = false, lastTry = 0;
+    var engineLabel = nativeDetector ? '瀏覽器原生' : 'ZXing-WASM（高精度）';
+    isScanning = true;
+    (function tick() {
+      if (!isScanning) return;
+      var now = performance.now();
+      if (!busy && video.readyState >= 2 && now - lastTry > 150) {
+        if (cropToFrame(video, canvas, ctx)) {
+          lastTry = now; busy = true;
+          var work;
+          if (nativeDetector) {
+            work = nativeDetector.detect(canvas).then(function (codes) {
+              return codes && codes.length ? codes[0].rawValue : null;
+            });
+          } else {
+            var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            work = decodeWithZxing(imageData).then(function (results) {
+              return results && results.length ? results[0].text : null;
+            });
+          }
+          work.then(function (text) {
+            if (text) onHit(text);
+            $('debugNote').textContent = '引擎：' + engineLabel + '　畫面 ' + video.videoWidth + '×' + video.videoHeight;
+          }).catch(function (e) {
+            $('debugNote').textContent = '解碼發生錯誤：' + ((e && e.message) || e);
+          }).then(function () { busy = false; });
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    })();
+  }
+
+  function startZxingPath() {
+    nativeDetector = null;
+    $('debugNote').textContent = '正在載入高精度掃碼引擎…';
+    loadZxingWasm().then(function () { loopDetect(); }).catch(function (e) {
+      $('debugNote').textContent = '掃碼引擎載入失敗：' + ((e && e.message) || e);
+      showCenter('warn', '掃碼引擎載入失敗', '請檢查網路連線後重新整理頁面，或改用下方「手動輸入」。', '改用手動輸入', function () {
+        hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
+      });
+    });
+  }
+
+  function tryNativeThenLoop() {
+    if (!('BarcodeDetector' in window)) { startZxingPath(); return; }
+    try {
+      window.BarcodeDetector.getSupportedFormats().then(function (supported) {
+        supported = supported || [];
+        var want = ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar'];
+        var use = want.filter(function (f) { return supported.indexOf(f) !== -1; });
+        try {
+          nativeDetector = use.length ? new window.BarcodeDetector({ formats: use }) : new window.BarcodeDetector();
+          loopDetect();
+        } catch (e) { startZxingPath(); }
+      }).catch(function () { startZxingPath(); });
+    } catch (e) { startZxingPath(); }
   }
 
   function startCamera() {
     showCenter('warn', '正在啟動相機…', '請允許瀏覽器使用相機權限');
 
-    var ctorConfig = { verbose: false };
-    var Formats = window.Html5QrcodeSupportedFormats;
-    if (Formats) {
-      // 只鎖定會用到的一維條碼格式（Code128 / Code39，外加常見的其他一維格式備用），
-      // 不去嘗試 QR Code 等二維格式，解碼引擎專心比對條碼可以更快、更準。
-      ctorConfig.formatsToSupport = [
-        Formats.CODE_128, Formats.CODE_39, Formats.EAN_13, Formats.EAN_8,
-        Formats.UPC_A, Formats.UPC_E, Formats.ITF, Formats.CODABAR
-      ];
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showCenter('warn', '此瀏覽器不支援相機', '請改用下方「手動輸入」，或用掃描槍搭配主頁面。');
+      $('manualRow').classList.add('show'); $('manualToggle').classList.add('on');
+      return;
     }
-    html5QrCode = new Html5Qrcode('reader', ctorConfig);
 
-    var config = {
-      fps: 12,
-      // 掃描框大小依實際螢幕尺寸換算，並和畫面上看到的 .frame 對齊
-      qrbox: function (viewfinderWidth, viewfinderHeight) {
-        var w = Math.floor(viewfinderWidth * FRAME_RATIO.w);
-        var h = Math.floor(viewfinderHeight * FRAME_RATIO.h);
-        h = Math.max(FRAME_RATIO.minH, Math.min(h, FRAME_RATIO.maxH));
-        return { width: w, height: h };
-      },
-      disableFlip: true, // 用後鏡頭，不需要水平翻轉
-      videoConstraints: {
-        facingMode: 'environment',
+    navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
         width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        advanced: [{ focusMode: 'continuous' }] // 部分手機支援連續對焦，不支援就忽略
-      },
-      experimentalFeatures: {
-        useBarCodeDetectorIfSupported: true // 手機瀏覽器有內建硬體解碼時優先使用，速度快很多
+        height: { ideal: 1080 }
       }
-    };
-
-    html5QrCode.start(
-      { facingMode: 'environment' },
-      config,
-      function (decodedText) { onHit(decodedText); },
-      function () { /* 單幀沒掃到，忽略，持續嘗試 */ }
-    ).then(function () {
+    }).then(function (stream) {
+      mediaStream = stream;
+      var video = $('video');
+      video.srcObject = stream;
+      var p = video.play(); if (p && p.catch) p.catch(function () {});
       hideCenter();
-      setupCameraControls();
+
+      var track = stream.getVideoTracks()[0];
       try {
-        var settings = html5QrCode.getRunningTrackSettings();
-        var w = (settings && settings.width) || '?', h = (settings && settings.height) || '?';
-        $('debugNote').textContent = '引擎：Html5-Qrcode（一維條碼最佳化）・畫面 ' + w + '×' + h;
-      } catch (e) {
-        $('debugNote').textContent = '引擎：Html5-Qrcode（一維條碼最佳化）';
-      }
-    }).catch(function () {
-      showCenter('warn', '無法開啟相機', '請確認權限，或改用下方「手動輸入」。', '改用手動輸入', function () {
-        hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
-      });
-    });
+        var caps = track.getCapabilities ? track.getCapabilities() : {};
+        if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
+          track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {});
+        }
+      } catch (e) {}
+      setupCameraControls(track);
+
+      tryNativeThenLoop();
+    }).catch(function () { cameraFailed(); });
   }
 
   $('manualToggle').onclick = function () {
@@ -422,7 +506,7 @@
     if (document.hidden) {
       stopCamera();
     } else {
-      if (!html5QrCode || !html5QrCode.isScanning) startCamera();
+      if (!isScanning) startCamera();
     }
   });
 
