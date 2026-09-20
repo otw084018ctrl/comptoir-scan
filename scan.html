@@ -10,6 +10,7 @@
     --ink: #ffffff; --ink-2: rgba(255,255,255,.72); --ink-muted: rgba(255,255,255,.5);
     --surface: rgba(20,20,20,.72); --line: rgba(255,255,255,.16);
     --radius-lg: 16px; --radius-md: 12px;
+    --frame-h: clamp(92px, 30vh, 220px);
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; margin: 0; background: #000; color: var(--ink); }
@@ -17,18 +18,24 @@
     overflow: hidden; -webkit-font-smoothing: antialiased; }
   button, input { font: inherit; color: inherit; }
 
-  /* 讓新套件的容器填滿畫面 */
+  /* 讓掃碼引擎的容器填滿畫面 */
   #reader { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 1; background: #000; }
   #reader video { object-fit: cover !important; width: 100% !important; height: 100% !important; }
+  /* html5-qrcode 內建的掃描框線 UI 用不到，全部隱藏，改用我們自己畫的 .frame */
+  #reader img, #reader__dashboard, #reader__scan_region > img { display: none !important; }
 
   .veil { position: fixed; inset: 0; box-shadow: inset 0 0 0 2000px rgba(0,0,0,.35); pointer-events: none; z-index: 2; }
-  .frame { position: fixed; left: 8%; right: 8%; top: 30%; bottom: 34%; border: 2.5px solid rgba(255,255,255,.9); border-radius: 18px; z-index: 3; pointer-events: none; }
+  .frame { position: fixed; left: 8%; right: 8%; top: 50%; height: var(--frame-h); transform: translateY(-50%);
+    border: 2.5px solid rgba(255,255,255,.9); border-radius: 18px; z-index: 3; pointer-events: none; }
   .frame::before, .frame::after { content: ''; position: absolute; width: 28px; height: 28px; border-color: var(--over); border-style: solid; }
   .frame::before { left: -2.5px; top: -2.5px; border-width: 4px 0 0 4px; border-top-left-radius: 14px; }
   .frame::after { right: -2.5px; bottom: -2.5px; border-width: 0 4px 4px 0; border-bottom-right-radius: 14px; }
-  .scanline { position: fixed; left: 10%; right: 10%; height: 2px; z-index: 3; top: 31%;
+  .scanline { position: fixed; left: 10%; right: 10%; height: 2px; z-index: 3; top: calc(50% - var(--frame-h) / 2 + 6px);
     background: linear-gradient(90deg, transparent, var(--over), transparent); animation: sweep 2s ease-in-out infinite; pointer-events: none; }
-  @keyframes sweep { 0%,100% { top: 31%; } 50% { top: 65%; } }
+  @keyframes sweep {
+    0%, 100% { top: calc(50% - var(--frame-h) / 2 + 6px); }
+    50% { top: calc(50% + var(--frame-h) / 2 - 6px); }
+  }
 
   header { position: fixed; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
     padding: calc(env(safe-area-inset-top) + 12px) 14px 12px; background: linear-gradient(rgba(0,0,0,.55), transparent); }
@@ -44,7 +51,15 @@
   .flash.go { animation: flashgo .28s ease; }
   @keyframes flashgo { 0% { opacity: 0; } 25% { opacity: .5; } 100% { opacity: 0; } }
 
-  .hint { position: fixed; left: 0; right: 0; z-index: 5; text-align: center; color: var(--ink-2); font-size: 13px; padding: 0 28px; bottom: 34%; margin-bottom: -34px; }
+  .hint { position: fixed; left: 0; right: 0; z-index: 5; text-align: center; color: var(--ink-2); font-size: 13px; padding: 0 28px;
+    top: calc(50% + var(--frame-h) / 2 + 16px); }
+
+  /* 右側浮動工具列：手電筒 / 縮放 */
+  .cam-tools { position: fixed; right: 14px; top: 50%; transform: translateY(-50%); z-index: 5; display: flex; flex-direction: column; gap: 10px; }
+  .tool-btn { width: 44px; height: 44px; border-radius: 50%; background: var(--surface); border: 1px solid var(--line); color: #fff;
+    display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); font-size: 19px; font-weight: 700; }
+  .tool-btn svg { width: 20px; height: 20px; }
+  .tool-btn.on { background: var(--over); border-color: var(--over); }
 
   .center-msg { position: fixed; inset: 0; z-index: 6; display: none; align-items: center; justify-content: center; flex-direction: column;
     gap: 14px; padding: 32px; text-align: center; background: rgba(0,0,0,.55); }
@@ -82,7 +97,7 @@
   .sync-note { text-align: center; font-size: 11px; color: var(--ink-muted); margin-top: 8px; }
 </style>
 <!-- 引入強化版掃碼引擎 Html5-Qrcode -->
-<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
 
@@ -91,6 +106,11 @@
 <div class="frame"></div>
 <div class="scanline"></div>
 <div class="hint">請保持條碼「水平」並對準中心</div>
+<div class="cam-tools" id="camTools">
+  <button id="torchBtn" type="button" class="tool-btn" hidden></button>
+  <button id="zoomInBtn" type="button" class="tool-btn" hidden>﹢</button>
+  <button id="zoomOutBtn" type="button" class="tool-btn" hidden>﹣</button>
+</div>
 <div class="flash" id="flash"></div>
 <div class="toast" id="toast"></div>
 
@@ -123,7 +143,7 @@
     <button id="doneBtn" type="button"></button>
   </div>
   <div class="sync-note" id="syncNote"></div>
-  <div class="sync-note" id="debugNote">引擎: Html5-Qrcode (強化一維條碼)</div>
+  <div class="sync-note" id="debugNote">正在啟動相機…</div>
 </div>
 
 <script>
@@ -141,11 +161,13 @@
     warn:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.6 1.8 18a1 1 0 0 0 .9 1.5h18.6a1 1 0 0 0 .9-1.5L13.7 3.6a1 1 0 0 0-1.7 0Z"/><path d="M12 9v4M12 17h.01"/></svg>',
     cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
     keyboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"/></svg>',
-    check2: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
+    check2: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+    bolt: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 2 3 14h7l-1 8 11-14h-7l0-6Z"/></svg>'
   };
   $('closeBtn').innerHTML = ICON.cross;
   $('manualToggle').innerHTML = ICON.keyboard + '<span>手動輸入</span>';
   $('doneBtn').innerHTML = ICON.check2 + '<span>完成，關閉</span>';
+  $('torchBtn').innerHTML = ICON.bolt;
   $('locLabel').textContent = LABEL + ' · 相機掃描';
   $('who').textContent = WHO ? ('盤點人：' + WHO) : '';
 
@@ -240,7 +262,7 @@
     var now = Date.now();
     if (code === S.lastCode && now - S.lastAt < 1500) return;
     S.lastCode = code; S.lastAt = now;
-    
+
     var flash = $('flash'); flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
 
     if (!BASE) {
@@ -254,10 +276,10 @@
     var scan = { id: uid(), t: now, loc: LOC, code: code, name: name || '庫存表無此條碼' };
     S.queue.push(scan); persist(); flush(); render();
 
-    if (!name) { 
-      toast('bad', '查無此條碼: ' + code); 
-      feedback('bad'); 
-      return; 
+    if (!name) {
+      toast('bad', '查無此條碼: ' + code);
+      feedback('bad');
+      return;
     }
     var need = S.stock[code] || 0, got = S.counts[code];
     var kind = got > need ? 'warn' : 'ok';
@@ -265,43 +287,107 @@
     feedback(kind);
   }
 
-  /* ---------- 全新引擎 Html5Qrcode ---------- */
+  /* ---------- 掃碼引擎：Html5-Qrcode ---------- */
   var html5QrCode = null;
+  var FRAME_RATIO = { w: 0.84, h: 0.30, minH: 92, maxH: 220 }; // 對應 CSS .frame
 
   function stopCamera() {
-    if (html5QrCode) {
-      html5QrCode.stop().then(function() { html5QrCode.clear(); }).catch(function(e) {});
+    hideCamTools();
+    if (html5QrCode && html5QrCode.isScanning) {
+      html5QrCode.stop().then(function () { html5QrCode.clear(); }).catch(function () {});
     }
+  }
+
+  function hideCamTools() {
+    $('torchBtn').hidden = true; $('torchBtn').classList.remove('on');
+    $('zoomInBtn').hidden = true; $('zoomOutBtn').hidden = true;
+  }
+
+  function setupCameraControls() {
+    hideCamTools();
+    if (!html5QrCode || typeof html5QrCode.getRunningTrackCameraCapabilities !== 'function') return;
+    try {
+      var caps = html5QrCode.getRunningTrackCameraCapabilities();
+
+      if (typeof caps.torchFeature === 'function') {
+        var torch = caps.torchFeature();
+        if (torch && torch.isSupported && torch.isSupported()) {
+          var torchOn = false;
+          $('torchBtn').hidden = false;
+          $('torchBtn').onclick = function () {
+            torchOn = !torchOn;
+            torch.apply(torchOn).catch(function () {});
+            $('torchBtn').classList.toggle('on', torchOn);
+          };
+        }
+      }
+
+      if (typeof caps.zoomFeature === 'function') {
+        var zoom = caps.zoomFeature();
+        if (zoom && zoom.isSupported && zoom.isSupported()) {
+          var min = zoom.min(), max = zoom.max(), step = zoom.step() || 0.5;
+          var cur = (zoom.value ? zoom.value() : min) || min;
+          $('zoomInBtn').hidden = false;
+          $('zoomOutBtn').hidden = false;
+          $('zoomInBtn').onclick = function () { cur = Math.min(max, cur + step); zoom.apply(cur).catch(function () {}); };
+          $('zoomOutBtn').onclick = function () { cur = Math.max(min, cur - step); zoom.apply(cur).catch(function () {}); };
+        }
+      }
+    } catch (e) {}
   }
 
   function startCamera() {
     showCenter('warn', '正在啟動相機…', '請允許瀏覽器使用相機權限');
-    
-    // 初始化 Html5Qrcode，將它綁定到 id 為 "reader" 的 div
-    html5QrCode = new Html5Qrcode("reader");
 
-    // 設定掃描參數，優化一維條碼讀取
-    var config = { 
-      fps: 10,  // 每秒解析幀數
-      qrbox: { width: 300, height: 150 }, // 針對一維條碼設定「長方形」解析區，強迫對焦中心
+    var ctorConfig = { verbose: false };
+    var Formats = window.Html5QrcodeSupportedFormats;
+    if (Formats) {
+      // 只鎖定會用到的一維條碼格式（Code128 / Code39，外加常見的其他一維格式備用），
+      // 不去嘗試 QR Code 等二維格式，解碼引擎專心比對條碼可以更快、更準。
+      ctorConfig.formatsToSupport = [
+        Formats.CODE_128, Formats.CODE_39, Formats.EAN_13, Formats.EAN_8,
+        Formats.UPC_A, Formats.UPC_E, Formats.ITF, Formats.CODABAR
+      ];
+    }
+    html5QrCode = new Html5Qrcode('reader', ctorConfig);
+
+    var config = {
+      fps: 12,
+      // 掃描框大小依實際螢幕尺寸換算，並和畫面上看到的 .frame 對齊
+      qrbox: function (viewfinderWidth, viewfinderHeight) {
+        var w = Math.floor(viewfinderWidth * FRAME_RATIO.w);
+        var h = Math.floor(viewfinderHeight * FRAME_RATIO.h);
+        h = Math.max(FRAME_RATIO.minH, Math.min(h, FRAME_RATIO.maxH));
+        return { width: w, height: h };
+      },
+      disableFlip: true, // 用後鏡頭，不需要水平翻轉
+      videoConstraints: {
+        facingMode: 'environment',
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        advanced: [{ focusMode: 'continuous' }] // 部分手機支援連續對焦，不支援就忽略
+      },
       experimentalFeatures: {
-        useBarCodeDetectorIfSupported: true // 超級關鍵：如果有硬體支援就用硬體
+        useBarCodeDetectorIfSupported: true // 手機瀏覽器有內建硬體解碼時優先使用，速度快很多
       }
     };
 
     html5QrCode.start(
-      { facingMode: "environment" }, 
+      { facingMode: 'environment' },
       config,
-      function(decodedText, decodedResult) {
-        // 成功掃描到條碼
-        onHit(decodedText);
-      },
-      function(errorMessage) {
-        // 沒掃到時會持續觸發這裡，不理它就好
-      }
-    ).then(function() {
+      function (decodedText) { onHit(decodedText); },
+      function () { /* 單幀沒掃到，忽略，持續嘗試 */ }
+    ).then(function () {
       hideCenter();
-    }).catch(function(err) {
+      setupCameraControls();
+      try {
+        var settings = html5QrCode.getRunningTrackSettings();
+        var w = (settings && settings.width) || '?', h = (settings && settings.height) || '?';
+        $('debugNote').textContent = '引擎：Html5-Qrcode（一維條碼最佳化）・畫面 ' + w + '×' + h;
+      } catch (e) {
+        $('debugNote').textContent = '引擎：Html5-Qrcode（一維條碼最佳化）';
+      }
+    }).catch(function () {
       showCenter('warn', '無法開啟相機', '請確認權限，或改用下方「手動輸入」。', '改用手動輸入', function () {
         hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
       });
@@ -352,42 +438,29 @@
       S.queue.concat(S.inflight || []).forEach(function (x) { S.counts[x.code] = (S.counts[x.code] || 0) + 1; });
       S.ready = true; render();
       $('syncNote').textContent = '已與伺服器同步';
-      
-     function startCamera() {
-    showCenter('warn', '正在啟動相機…', '請允許瀏覽器使用相機權限');
-    
-    html5QrCode = new Html5Qrcode("reader");
 
-    var config = { 
-      fps: 15,  
-      experimentalFeatures: {
-        useBarCodeDetectorIfSupported: true // 保持硬體晶片加速
-      }
-    };
+      startCamera();
+      flush();
 
-    // 拿掉強制的 min，改用 ideal (理想值)，讓手機直拿時不會報錯
-    // 拿掉可能導致 Safari 崩潰的 advanced focusMode，現代手機大多會自動對焦
-    var cameraConstraints = {
-      facingMode: "environment",
-      width: { ideal: 1920 },
-      height: { ideal: 1080 }
-    };
-
-    html5QrCode.start(
-      cameraConstraints, 
-      config,
-      function(decodedText, decodedResult) {
-        onHit(decodedText);
-      },
-      function(errorMessage) {
-        // 沒掃到時會持續觸發，忽略即可
-      }
-    ).then(function() {
-      hideCenter();
-    }).catch(function(err) {
-      console.error("相機啟動失敗:", err); // 在開發者工具留個紀錄
-      showCenter('warn', '無法開啟相機', '請確認相機權限是否已開啟，或改用下方「手動輸入」。', '改用手動輸入', function () {
-        hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
-      });
+      setInterval(function () {
+        if (!document.hidden) {
+          apiGet('counts').then(function (serverCounts) {
+            var merged = {};
+            Object.keys(serverCounts || {}).forEach(function (c) { merged[c] = serverCounts[c]; });
+            S.queue.concat(S.inflight || []).forEach(function (x) { merged[x.code] = (merged[x.code] || 0) + 1; });
+            S.counts = merged; render();
+            $('syncNote').textContent = '已與伺服器同步';
+          }).catch(function () {});
+        }
+      }, 20000);
+    }).catch(function (e) {
+      showCenter('warn', '連線失敗', (e && e.message) || '無法連上盤點系統，請確認網路連線後重新整理頁面。');
     });
+  } else {
+    // 沒參數就純開相機測試
+    startCamera();
   }
+})();
+</script>
+</body>
+</html>
