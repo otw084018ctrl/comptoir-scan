@@ -12,15 +12,23 @@
     --radius-lg: 16px; --radius-md: 12px;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; }
-  body { margin: 0; background: #000; color: var(--ink);
-    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  html, body { height: 100%; margin: 0; background: #000; color: var(--ink); }
+  body { font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", "Noto Sans TC", sans-serif;
     overflow: hidden; -webkit-font-smoothing: antialiased; }
   button, input { font: inherit; color: inherit; }
 
-  #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+  /* 讓新套件的容器填滿畫面 */
+  #reader { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 1; background: #000; }
+  #reader video { object-fit: cover !important; width: 100% !important; height: 100% !important; }
 
-  .veil { position: fixed; inset: 0; box-shadow: inset 0 0 0 2000px rgba(0,0,0,.35); pointer-events: none; }
+  .veil { position: fixed; inset: 0; box-shadow: inset 0 0 0 2000px rgba(0,0,0,.35); pointer-events: none; z-index: 2; }
+  .frame { position: fixed; left: 8%; right: 8%; top: 30%; bottom: 34%; border: 2.5px solid rgba(255,255,255,.9); border-radius: 18px; z-index: 3; pointer-events: none; }
+  .frame::before, .frame::after { content: ''; position: absolute; width: 28px; height: 28px; border-color: var(--over); border-style: solid; }
+  .frame::before { left: -2.5px; top: -2.5px; border-width: 4px 0 0 4px; border-top-left-radius: 14px; }
+  .frame::after { right: -2.5px; bottom: -2.5px; border-width: 0 4px 4px 0; border-bottom-right-radius: 14px; }
+  .scanline { position: fixed; left: 10%; right: 10%; height: 2px; z-index: 3; top: 31%;
+    background: linear-gradient(90deg, transparent, var(--over), transparent); animation: sweep 2s ease-in-out infinite; pointer-events: none; }
+  @keyframes sweep { 0%,100% { top: 31%; } 50% { top: 65%; } }
 
   header { position: fixed; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
     padding: calc(env(safe-area-inset-top) + 12px) 14px 12px; background: linear-gradient(rgba(0,0,0,.55), transparent); }
@@ -31,14 +39,6 @@
   #closeBtn { width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.16); border: 0; color: #fff;
     display: flex; align-items: center; justify-content: center; }
   #closeBtn svg { width: 18px; height: 18px; }
-
-  .frame { position: fixed; left: 8%; right: 8%; top: 30%; bottom: 34%; border: 2.5px solid rgba(255,255,255,.9); border-radius: 18px; z-index: 3; pointer-events: none; }
-  .frame::before, .frame::after { content: ''; position: absolute; width: 28px; height: 28px; border-color: var(--over); border-style: solid; }
-  .frame::before { left: -2.5px; top: -2.5px; border-width: 4px 0 0 4px; border-top-left-radius: 14px; }
-  .frame::after { right: -2.5px; bottom: -2.5px; border-width: 0 4px 4px 0; border-bottom-right-radius: 14px; }
-  .scanline { position: fixed; left: 10%; right: 10%; height: 2px; z-index: 3; top: 31%;
-    background: linear-gradient(90deg, transparent, var(--over), transparent); animation: sweep 2s ease-in-out infinite; pointer-events: none; }
-  @keyframes sweep { 0%,100% { top: 31%; } 50% { top: 65%; } }
 
   .flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 4; }
   .flash.go { animation: flashgo .28s ease; }
@@ -81,13 +81,16 @@
   .action-row button.on { background: var(--over); border-color: var(--over); }
   .sync-note { text-align: center; font-size: 11px; color: var(--ink-muted); margin-top: 8px; }
 </style>
+<!-- 引入強化版掃碼引擎 Html5-Qrcode -->
+<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 </head>
 <body>
-<video id="video" muted playsinline autoplay></video>
+
+<div id="reader"></div>
 <div class="veil"></div>
 <div class="frame"></div>
 <div class="scanline"></div>
-<div class="hint">請保持條碼「水平」並確保兩側留白</div>
+<div class="hint">請保持條碼「水平」並對準中心</div>
 <div class="flash" id="flash"></div>
 <div class="toast" id="toast"></div>
 
@@ -120,7 +123,7 @@
     <button id="doneBtn" type="button"></button>
   </div>
   <div class="sync-note" id="syncNote"></div>
-  <div class="sync-note" id="debugNote"></div>
+  <div class="sync-note" id="debugNote">引擎: Html5-Qrcode (強化一維條碼)</div>
 </div>
 
 <script>
@@ -237,11 +240,11 @@
     var now = Date.now();
     if (code === S.lastCode && now - S.lastAt < 1500) return;
     S.lastCode = code; S.lastAt = now;
+    
     var flash = $('flash'); flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
 
     if (!BASE) {
-      // 測試模式下的回饋
-      toast('ok', '成功掃描: ' + code);
+      toast('ok', '測試掃描成功: ' + code);
       feedback('ok');
       return;
     }
@@ -262,116 +265,46 @@
     feedback(kind);
   }
 
-  /* ---------- 相機處理區 ---------- */
-  var mediaStream = null, rafId = null, debugTicks = 0;
+  /* ---------- 全新引擎 Html5Qrcode ---------- */
+  var html5QrCode = null;
 
   function stopCamera() {
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = null;
-    if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
-  }
-
-  function loadZXing() {
-    return new Promise(function (resolve, reject) {
-      if (window.ZXing) return resolve();
-      var s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js';
-      s.onload = resolve; s.onerror = function () { reject(new Error('相機套件載入失敗')); };
-      document.head.appendChild(s);
-    });
-  }
-
-  function loopZXing(reader) {
-    var video = $('video');
-    var canvas = document.createElement('canvas');
-    var ctx = canvas.getContext('2d', { willReadFrequently: true });
-    var lastTry = 0;
-    
-    (function tick() {
-      var now = performance.now();
-      // 控制在約每秒 4-5 幀運算，避免手機發燙卡頓
-      if (video.readyState >= 2 && now - lastTry > 200) {
-        lastTry = now;
-        var vw = video.videoWidth, vh = video.videoHeight;
-        if (vw && vh) {
-          // 不做局部裁切！整張畫面等比例縮小，確保保留條碼左右的「空白(Quiet Zone)」
-          var scale = Math.min(1, 640 / vw); 
-          var cw = vw * scale;
-          var ch = vh * scale;
-          
-          canvas.width = cw;
-          canvas.height = ch;
-          ctx.drawImage(video, 0, 0, cw, ch);
-          debugTicks++;
-          
-          try {
-            var result = reader.decodeFromCanvas(canvas);
-            if (result) onHit(result.getText());
-          } catch (e) { /* ZXing 沒找到時會報錯，直接略過 */ }
-        }
-      }
-      rafId = requestAnimationFrame(tick);
-    })();
+    if (html5QrCode) {
+      html5QrCode.stop().then(function() { html5QrCode.clear(); }).catch(function(e) {});
+    }
   }
 
   function startCamera() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      showCenter('warn', '此瀏覽器不支援相機', '請改用下方「手動輸入」，或用掃描槍。');
-      $('manualRow').classList.add('show'); $('manualToggle').classList.add('on');
-      return;
-    }
     showCenter('warn', '正在啟動相機…', '請允許瀏覽器使用相機權限');
+    
+    // 初始化 Html5Qrcode，將它綁定到 id 為 "reader" 的 div
+    html5QrCode = new Html5Qrcode("reader");
 
-    navigator.mediaDevices.getUserMedia({ 
-      video: { 
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        advanced: [{ focusMode: "continuous" }]
-      } 
-    }).then(function (stream) {
-      mediaStream = stream;
-      var video = $('video');
-      video.srcObject = stream;
-      var playPromise = video.play();
-      if (playPromise && playPromise.catch) playPromise.catch(function () {});
+    // 設定掃描參數，優化一維條碼讀取
+    var config = { 
+      fps: 10,  // 每秒解析幀數
+      qrbox: { width: 300, height: 150 }, // 針對一維條碼設定「長方形」解析區，強迫對焦中心
+      experimentalFeatures: {
+        useBarCodeDetectorIfSupported: true // 超級關鍵：如果有硬體支援就用硬體
+      }
+    };
+
+    html5QrCode.start(
+      { facingMode: "environment" }, 
+      config,
+      function(decodedText, decodedResult) {
+        // 成功掃描到條碼
+        onHit(decodedText);
+      },
+      function(errorMessage) {
+        // 沒掃到時會持續觸發這裡，不理它就好
+      }
+    ).then(function() {
       hideCenter();
-
-      $('debugNote').textContent = '正在載入全格式掃描引擎...';
-      
-      // 強制使用 ZXing (忽略可能有 bug 的 iOS Native BarcodeDetector)
-      loadZXing().then(function () {
-        // 設定強制解碼所有常見的一維與二維條碼
-        var hints = new Map();
-        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-          ZXing.BarcodeFormat.CODE_128,
-          ZXing.BarcodeFormat.CODE_39,
-          ZXing.BarcodeFormat.EAN_13,
-          ZXing.BarcodeFormat.EAN_8,
-          ZXing.BarcodeFormat.UPC_A,
-          ZXing.BarcodeFormat.UPC_E,
-          ZXing.BarcodeFormat.ITF,
-          ZXing.BarcodeFormat.QR_CODE
-        ]);
-        hints.set(ZXing.DecodeHintType.TRY_HARDER, true); // 開啟強力模式
-        
-        var reader = new ZXing.BrowserMultiFormatReader(hints);
-        $('debugNote').textContent = '偵測引擎：ZXing (全格式)';
-        
-        loopZXing(reader);
-      }).catch(function (e) { cameraFailed(e); });
-
-      setInterval(function () {
-        $('debugNote').innerHTML = $('debugNote').textContent.split(' ')[0] + ' (掃描幀數 ' + debugTicks + ')';
-      }, 1000);
-
-    }).catch(function (e) { cameraFailed(e); });
-  }
-
-  function cameraFailed(e) {
-    var msg = (e && e.message) || '無法存取相機';
-    showCenter('warn', '無法開啟相機', msg + '\n可以改用下方「手動輸入」繼續盤點。', '改用手動輸入', function () {
-      hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
+    }).catch(function(err) {
+      showCenter('warn', '無法開啟相機', '請確認權限，或改用下方「手動輸入」。', '改用手動輸入', function () {
+        hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
+      });
     });
   }
 
@@ -400,8 +333,13 @@
   };
 
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) stopCamera(); else if (!mediaStream) startCamera();
+    if (document.hidden) {
+      stopCamera();
+    } else {
+      if (!html5QrCode || !html5QrCode.isScanning) startCamera();
+    }
   });
+
   window.addEventListener('beforeunload', function (e) {
     if (S.queue.length || S.inflight) { e.preventDefault(); e.returnValue = ''; }
   });
@@ -414,8 +352,10 @@
       S.queue.concat(S.inflight || []).forEach(function (x) { S.counts[x.code] = (S.counts[x.code] || 0) + 1; });
       S.ready = true; render();
       $('syncNote').textContent = '已與伺服器同步';
-      startCamera();
+      
+      startCamera(); // 啟動全新引擎
       flush();
+      
       setInterval(function() {
         if (!document.hidden) {
           apiGet('counts').then(function (serverCounts) {
@@ -431,7 +371,7 @@
       showCenter('warn', '連線失敗', (e && e.message) || '無法連上盤點系統，請確認網路連線後重新整理頁面。');
     });
   } else {
-    // 沒參數就純開相機，用來 debug 條碼有沒有辦法被解析
+    // 沒參數就純開相機測試
     startCamera();
   }
 })();
