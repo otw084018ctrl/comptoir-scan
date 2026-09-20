@@ -87,7 +87,7 @@
 <div class="veil"></div>
 <div class="frame"></div>
 <div class="scanline"></div>
-<div class="hint">將條碼對準框內，會自動連續掃描</div>
+<div class="hint">請保持條碼「水平」並確保兩側留白</div>
 <div class="flash" id="flash"></div>
 <div class="toast" id="toast"></div>
 
@@ -157,11 +157,6 @@
   }
   function hideCenter() { $('centerMsg').classList.remove('show'); }
 
-  if (!BASE || !TOKEN || !LOC) {
-    showCenter('warn', '測試模式', '因為沒有帶入參數，目前為純測試模式。掃描不會記錄到伺服器。');
-    // 如果沒有參數，讓使用者至少能開相機測試條碼有沒有掃到
-  }
-
   var S = { names: {}, stock: {}, counts: {}, queue: [], inflight: null, ready: false, lastCode: null, lastAt: 0 };
   var LSKEY = 'camq_' + LOC;
   var LS = {
@@ -225,8 +220,7 @@
   }
 
   function flush() {
-    if (!BASE) return;
-    if (S.inflight || !S.queue.length) return;
+    if (!BASE || S.inflight || !S.queue.length) return;
     var batch = S.queue.splice(0, 50);
     S.inflight = batch; render();
     apiPost({ token: TOKEN, action: 'appendScans', user: WHO, scans: batch.map(function (x) { return { id: x.id, t: x.t, loc: x.loc, code: x.code, name: x.name }; }) })
@@ -245,6 +239,13 @@
     S.lastCode = code; S.lastAt = now;
     var flash = $('flash'); flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
 
+    if (!BASE) {
+      // 測試模式下的回饋
+      toast('ok', '成功掃描: ' + code);
+      feedback('ok');
+      return;
+    }
+
     var name = S.names[code];
     S.counts[code] = (S.counts[code] || 0) + 1;
     var scan = { id: uid(), t: now, loc: LOC, code: code, name: name || '庫存表無此條碼' };
@@ -261,7 +262,7 @@
     feedback(kind);
   }
 
-  /* ---------- 相機統一處理核心 ---------- */
+  /* ---------- 相機處理區 ---------- */
   var mediaStream = null, rafId = null, debugTicks = 0;
 
   function stopCamera() {
@@ -270,8 +271,17 @@
     if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
   }
 
-  // 統一的掃描迴圈：負責將畫面裁切，再餵給原生或 ZXing
-  function loopDetect(engine, scanner) {
+  function loadZXing() {
+    return new Promise(function (resolve, reject) {
+      if (window.ZXing) return resolve();
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js';
+      s.onload = resolve; s.onerror = function () { reject(new Error('相機套件載入失敗')); };
+      document.head.appendChild(s);
+    });
+  }
+
+  function loopZXing(reader) {
     var video = $('video');
     var canvas = document.createElement('canvas');
     var ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -279,46 +289,29 @@
     
     (function tick() {
       var now = performance.now();
-      if (video.readyState >= 2 && now - lastTry > 250) {
+      // 控制在約每秒 4-5 幀運算，避免手機發燙卡頓
+      if (video.readyState >= 2 && now - lastTry > 200) {
         lastTry = now;
         var vw = video.videoWidth, vh = video.videoHeight;
         if (vw && vh) {
-          // 裁切畫面中心 70% 寬, 40% 高
-          var cropW = vw * 0.7;
-          var cropH = vh * 0.4;
-          var startX = (vw - cropW) / 2;
-          var startY = (vh - cropH) / 2;
+          // 不做局部裁切！整張畫面等比例縮小，確保保留條碼左右的「空白(Quiet Zone)」
+          var scale = Math.min(1, 640 / vw); 
+          var cw = vw * scale;
+          var ch = vh * scale;
           
-          canvas.width = cropW;
-          canvas.height = cropH;
-          // 只把中間畫進 Canvas
-          ctx.drawImage(video, startX, startY, cropW, cropH, 0, 0, cropW, cropH);
+          canvas.width = cw;
+          canvas.height = ch;
+          ctx.drawImage(video, 0, 0, cw, ch);
           debugTicks++;
           
-          if (engine === 'native') {
-            scanner.detect(canvas).then(function(codes) {
-              if (codes && codes.length > 0) onHit(codes[0].rawValue);
-            }).catch(function(e) {});
-          } else {
-            try {
-              var result = scanner.decodeFromCanvas(canvas);
-              if (result) onHit(result.getText());
-            } catch (e) { /* ZXing 找不到條碼時會 throw error，正常略過 */ }
-          }
+          try {
+            var result = reader.decodeFromCanvas(canvas);
+            if (result) onHit(result.getText());
+          } catch (e) { /* ZXing 沒找到時會報錯，直接略過 */ }
         }
       }
       rafId = requestAnimationFrame(tick);
     })();
-  }
-
-  function loadZXing() {
-    return new Promise(function (resolve, reject) {
-      if (window.ZXing) return resolve();
-      var s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js';
-      s.onload = resolve; s.onerror = function () { reject(new Error('相機掃描套件載入失敗')); };
-      document.head.appendChild(s);
-    });
   }
 
   function startCamera() {
@@ -344,35 +337,32 @@
       if (playPromise && playPromise.catch) playPromise.catch(function () {});
       hideCenter();
 
-      // 檢查是否支援原生 BarcodeDetector 且支援常見格式
-      if ('BarcodeDetector' in window) {
-        window.BarcodeDetector.getSupportedFormats().then(function(formats) {
-          if (formats.length > 0) {
-            var detector = new window.BarcodeDetector({ formats: formats });
-            $('debugNote').textContent = '偵測引擎：瀏覽器原生';
-            loopDetect('native', detector);
-          } else {
-            initZXingFallback();
-          }
-        }).catch(function() { initZXingFallback(); });
-      } else {
-        initZXingFallback();
-      }
-
-      function initZXingFallback() {
-        $('debugNote').textContent = '正在載入 ZXing 套件...';
-        loadZXing().then(function () {
-          // 啟用 TRY_HARDER 參數，強制加深一維條碼的辨識能力
-          var hints = new Map();
-          hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-          var reader = new ZXing.BrowserMultiFormatReader(hints);
-          $('debugNote').textContent = '偵測引擎：ZXing (深度模式)';
-          loopDetect('zxing', reader);
-        }).catch(function (e) { cameraFailed(e); });
-      }
+      $('debugNote').textContent = '正在載入全格式掃描引擎...';
+      
+      // 強制使用 ZXing (忽略可能有 bug 的 iOS Native BarcodeDetector)
+      loadZXing().then(function () {
+        // 設定強制解碼所有常見的一維與二維條碼
+        var hints = new Map();
+        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+          ZXing.BarcodeFormat.CODE_128,
+          ZXing.BarcodeFormat.CODE_39,
+          ZXing.BarcodeFormat.EAN_13,
+          ZXing.BarcodeFormat.EAN_8,
+          ZXing.BarcodeFormat.UPC_A,
+          ZXing.BarcodeFormat.UPC_E,
+          ZXing.BarcodeFormat.ITF,
+          ZXing.BarcodeFormat.QR_CODE
+        ]);
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true); // 開啟強力模式
+        
+        var reader = new ZXing.BrowserMultiFormatReader(hints);
+        $('debugNote').textContent = '偵測引擎：ZXing (全格式)';
+        
+        loopZXing(reader);
+      }).catch(function (e) { cameraFailed(e); });
 
       setInterval(function () {
-        $('debugNote').innerHTML = $('debugNote').textContent.split(' ')[0] + ' (已處理 ' + debugTicks + ' 幀)';
+        $('debugNote').innerHTML = $('debugNote').textContent.split(' ')[0] + ' (掃描幀數 ' + debugTicks + ')';
       }, 1000);
 
     }).catch(function (e) { cameraFailed(e); });
