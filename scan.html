@@ -284,7 +284,9 @@
 
   /* ---------- 掃碼引擎：原生 BarcodeDetector（優先）／ZXing-WASM（備援） ---------- */
   var ZXING_VER = '3.1.4';
-  var ZXING_BASE = 'https://cdn.jsdelivr.net/npm/zxing-wasm@' + ZXING_VER + '/dist/reader/';
+  var ZXING_PKG = 'https://cdn.jsdelivr.net/npm/zxing-wasm@' + ZXING_VER + '/';
+  var ZXING_ENTRY = ZXING_PKG + 'dist/es/reader/index.js'; // 套件的 ESM 進入點
+  var ZXING_WASM_DIR = ZXING_PKG + 'dist/reader/'; // .wasm 檔實際放的資料夾（跟 es/reader 不同層）
   var ZXING_FORMATS = ['Code128', 'Code39', 'EAN-13', 'EAN-8', 'UPC-A', 'UPC-E', 'ITF', 'Codabar'];
 
   var mediaStream = null, rafId = null, nativeDetector = null, isScanning = false;
@@ -363,9 +365,9 @@
 
   function loadZxingWasm() {
     if (zxingLoadPromise) return zxingLoadPromise;
-    zxingLoadPromise = import(ZXING_BASE + 'index.js').then(function (mod) {
+    zxingLoadPromise = import(ZXING_ENTRY).then(function (mod) {
       mod.prepareZXingModule({
-        overrides: { locateFile: function (path) { return path.endsWith('.wasm') ? (ZXING_BASE + path) : path; } }
+        overrides: { locateFile: function (path) { return path.endsWith('.wasm') ? (ZXING_WASM_DIR + path) : path; } }
       });
       window.__zxingReadBarcodes = mod.readBarcodes;
       return mod;
