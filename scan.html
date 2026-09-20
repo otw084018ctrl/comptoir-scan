@@ -120,6 +120,7 @@
     <button id="doneBtn" type="button"></button>
   </div>
   <div class="sync-note" id="syncNote"></div>
+  <div class="sync-note" id="debugNote"></div>
 </div>
 
 <script>
@@ -268,12 +269,18 @@
     }).catch(function () {});
   }
 
-  /* ---------- 相機 ---------- */
-  var mediaStream = null, rafId = null, zxingReader = null, useNative = false;
+  /* ---------- 相機 ----------
+   * 相機的取得只用瀏覽器原生 getUserMedia 這一條路（已確認能正常顯示畫面）。
+   * 解碼另外用 requestAnimationFrame 自己抓 canvas 畫面去解，
+   * 不依賴 zxing-js 內建那套「自己接管相機＋抓影格」的邏輯——
+   * 那套在部分 iOS Safari 版本上會啞掉（相機畫面正常，但完全偵測不到），
+   * 拆開來各自用最單純、最少魔法的方式做，比較不會遇到這種黑盒子問題。
+   */
+  var mediaStream = null, rafId = null, debugTicks = 0;
 
   function stopCamera() {
     if (rafId) cancelAnimationFrame(rafId);
-    if (zxingReader) { try { zxingReader.reset(); } catch (e) {} zxingReader = null; }
+    rafId = null;
     if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
   }
 
@@ -281,9 +288,34 @@
     var video = $('video');
     (function tick() {
       if (video.readyState >= 2) {
+        debugTicks++;
         detector.detect(video).then(function (codes) {
           if (codes && codes.length) onHit(codes[0].rawValue);
         }).catch(function () {});
+      }
+      rafId = requestAnimationFrame(tick);
+    })();
+  }
+
+  function loopZXingDetect(reader) {
+    var video = $('video');
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+    var lastTry = 0;
+    (function tick() {
+      var now = performance.now();
+      if (video.readyState >= 2 && now - lastTry > 180) {
+        lastTry = now;
+        var w = video.videoWidth, h = video.videoHeight;
+        if (w && h) {
+          canvas.width = w; canvas.height = h;
+          ctx.drawImage(video, 0, 0, w, h);
+          debugTicks++;
+          try {
+            var result = reader.decodeFromCanvas(canvas);
+            if (result) onHit(result.getText());
+          } catch (e) { /* 大部分畫面找不到條碼是正常的，不用理會 */ }
+        }
       }
       rafId = requestAnimationFrame(tick);
     })();
@@ -307,33 +339,43 @@
     }
     showCenter('warn', '正在啟動相機…', '請允許瀏覽器使用相機權限');
 
-    var nativeOk = false;
-    if ('BarcodeDetector' in window) {
-      try {
-        var testDetector = new window.BarcodeDetector({
-          formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar', 'qr_code']
-        });
-        nativeOk = true;
-      } catch (e) { nativeOk = false; }
-    }
-    if (nativeOk) {
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } })
-        .then(function (stream) {
-          mediaStream = stream; $('video').srcObject = stream;
-          useNative = true; hideCenter();
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } })
+      .then(function (stream) {
+        mediaStream = stream;
+        var video = $('video');
+        video.srcObject = stream;
+        var playPromise = video.play();
+        if (playPromise && playPromise.catch) playPromise.catch(function () {});
+        hideCenter();
+
+        var nativeOk = false, testDetector;
+        if ('BarcodeDetector' in window) {
+          try {
+            testDetector = new window.BarcodeDetector({
+              formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar', 'qr_code']
+            });
+            nativeOk = true;
+          } catch (e) { nativeOk = false; }
+        }
+        if (nativeOk) {
+          $('debugNote').textContent = '偵測引擎：瀏覽器原生';
           loopNativeDetect(testDetector);
-        })
-        .catch(function (e) { cameraFailed(e); });
-    } else {
-      loadZXing().then(function () {
-        zxingReader = new ZXing.BrowserMultiFormatReader();
-        return zxingReader.decodeFromConstraints(
-          { video: { facingMode: { ideal: 'environment' } } },
-          $('video'),
-          function (result) { if (result) onHit(result.getText()); }
-        );
-      }).then(function () { hideCenter(); }).catch(function (e) { cameraFailed(e); });
-    }
+        } else {
+          $('debugNote').textContent = '正在載入掃描套件…';
+          loadZXing().then(function () {
+            var reader = new ZXing.BrowserMultiFormatReader();
+            $('debugNote').textContent = '偵測引擎：ZXing';
+            loopZXingDetect(reader);
+          }).catch(function (e) { cameraFailed(e); });
+        }
+        setInterval(function () {
+          var v = $('video');
+          $('debugNote').textContent = (nativeOk ? '偵測引擎：瀏覽器原生' : '偵測引擎：ZXing') +
+            '　已處理 ' + debugTicks + ' 幀' +
+            '　畫面 ' + (v.videoWidth || 0) + '×' + (v.videoHeight || 0);
+        }, 1000);
+      })
+      .catch(function (e) { cameraFailed(e); });
   }
 
   function cameraFailed(e) {
@@ -369,7 +411,7 @@
   };
 
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) stopCamera(); else if (!mediaStream && !zxingReader) startCamera();
+    if (document.hidden) stopCamera(); else if (!mediaStream) startCamera();
   });
   window.addEventListener('beforeunload', function (e) {
     if (S.queue.length || S.inflight) { e.preventDefault(); e.returnValue = ''; }
