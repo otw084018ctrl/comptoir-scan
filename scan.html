@@ -158,11 +158,10 @@
   function hideCenter() { $('centerMsg').classList.remove('show'); }
 
   if (!BASE || !TOKEN || !LOC) {
-    showCenter('warn', '缺少必要參數', '請從主頁面的「相機掃描」按鈕開啟這個頁面，不要直接輸入網址。');
-    return;
+    showCenter('warn', '測試模式', '因為沒有帶入參數，目前為純測試模式。掃描不會記錄到伺服器。');
+    // 如果沒有參數，讓使用者至少能開相機測試條碼有沒有掃到
   }
 
-  /* ---------- 狀態 ---------- */
   var S = { names: {}, stock: {}, counts: {}, queue: [], inflight: null, ready: false, lastCode: null, lastAt: 0 };
   var LSKEY = 'camq_' + LOC;
   var LS = {
@@ -172,7 +171,6 @@
   function clean(v) { return String(v == null ? '' : v).replace(/\*/g, '').trim(); }
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
-  /* ---------- 音效 / 震動 ---------- */
   var ac = null;
   function tone(freq, start, dur, type, gain) {
     var o = ac.createOscillator(), g = ac.createGain();
@@ -213,20 +211,21 @@
     $('stPendBox').style.color = pend > 0 ? '#fab219' : '';
   }
 
-  /* ---------- 送出掃描 ---------- */
   function persist() { LS.set(LSKEY, JSON.stringify(S.queue.concat(S.inflight || []))); }
-
   function apiPost(payload) {
+    if (!BASE) return Promise.resolve({});
     return fetch(BASE, { method: 'POST', body: JSON.stringify(payload) })
       .then(function (r) { return r.json(); })
       .then(function (j) { if (!j.ok) throw new Error(j.error || '伺服器回傳失敗'); return j.data; });
   }
   function apiGet(action, extra) {
+    if (!BASE) return Promise.resolve({});
     var u = BASE + '?action=' + action + '&token=' + encodeURIComponent(TOKEN) + '&loc=' + encodeURIComponent(LOC) + (extra || '');
     return fetch(u).then(function (r) { return r.json(); }).then(function (j) { if (!j.ok) throw new Error(j.error || '伺服器回傳失敗'); return j.data; });
   }
 
   function flush() {
+    if (!BASE) return;
     if (S.inflight || !S.queue.length) return;
     var batch = S.queue.splice(0, 50);
     S.inflight = batch; render();
@@ -251,25 +250,18 @@
     var scan = { id: uid(), t: now, loc: LOC, code: code, name: name || '庫存表無此條碼' };
     S.queue.push(scan); persist(); flush(); render();
 
-    if (!name) { toast('bad', '查無此條碼 ' + code); feedback('bad'); return; }
+    if (!name) { 
+      toast('bad', '查無此條碼: ' + code); 
+      feedback('bad'); 
+      return; 
+    }
     var need = S.stock[code] || 0, got = S.counts[code];
     var kind = got > need ? 'warn' : 'ok';
     toast(kind, name + ' 已掃 ' + got + '／應有 ' + need);
     feedback(kind);
   }
 
-  /* ---------- 定期跟伺服器同步已掃數量 ---------- */
-  function pollCounts() {
-    apiGet('counts').then(function (serverCounts) {
-      var merged = {};
-      Object.keys(serverCounts || {}).forEach(function (c) { merged[c] = serverCounts[c]; });
-      S.queue.concat(S.inflight || []).forEach(function (x) { merged[x.code] = (merged[x.code] || 0) + 1; });
-      S.counts = merged; render();
-      $('syncNote').textContent = '已與伺服器同步';
-    }).catch(function () {});
-  }
-
-  /* ---------- 相機 ---------- */
+  /* ---------- 相機統一處理核心 ---------- */
   var mediaStream = null, rafId = null, debugTicks = 0;
 
   function stopCamera() {
@@ -278,32 +270,20 @@
     if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
   }
 
-  function loopNativeDetect(detector) {
-    var video = $('video');
-    (function tick() {
-      if (video.readyState >= 2) {
-        debugTicks++;
-        detector.detect(video).then(function (codes) {
-          if (codes && codes.length) onHit(codes[0].rawValue);
-        }).catch(function () {});
-      }
-      rafId = requestAnimationFrame(tick);
-    })();
-  }
-
-  function loopZXingDetect(reader) {
+  // 統一的掃描迴圈：負責將畫面裁切，再餵給原生或 ZXing
+  function loopDetect(engine, scanner) {
     var video = $('video');
     var canvas = document.createElement('canvas');
     var ctx = canvas.getContext('2d', { willReadFrequently: true });
     var lastTry = 0;
+    
     (function tick() {
       var now = performance.now();
-      // 把間隔拉長到 250ms，避免過載
       if (video.readyState >= 2 && now - lastTry > 250) {
         lastTry = now;
         var vw = video.videoWidth, vh = video.videoHeight;
         if (vw && vh) {
-          // 只擷取中央 70% 寬度與 40% 高度的畫面，與 UI 框框差不多
+          // 裁切畫面中心 70% 寬, 40% 高
           var cropW = vw * 0.7;
           var cropH = vh * 0.4;
           var startX = (vw - cropW) / 2;
@@ -311,13 +291,20 @@
           
           canvas.width = cropW;
           canvas.height = cropH;
+          // 只把中間畫進 Canvas
           ctx.drawImage(video, startX, startY, cropW, cropH, 0, 0, cropW, cropH);
-          
           debugTicks++;
-          try {
-            var result = reader.decodeFromCanvas(canvas);
-            if (result) onHit(result.getText());
-          } catch (e) { /* 大部分畫面找不到條碼是正常的，不用理會 */ }
+          
+          if (engine === 'native') {
+            scanner.detect(canvas).then(function(codes) {
+              if (codes && codes.length > 0) onHit(codes[0].rawValue);
+            }).catch(function(e) {});
+          } else {
+            try {
+              var result = scanner.decodeFromCanvas(canvas);
+              if (result) onHit(result.getText());
+            } catch (e) { /* ZXing 找不到條碼時會 throw error，正常略過 */ }
+          }
         }
       }
       rafId = requestAnimationFrame(tick);
@@ -329,20 +316,19 @@
       if (window.ZXing) return resolve();
       var s = document.createElement('script');
       s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js';
-      s.onload = resolve; s.onerror = function () { reject(new Error('相機掃描套件載入失敗（可能是網路問題）')); };
+      s.onload = resolve; s.onerror = function () { reject(new Error('相機掃描套件載入失敗')); };
       document.head.appendChild(s);
     });
   }
 
   function startCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      showCenter('warn', '此瀏覽器不支援相機', '請改用下方「手動輸入」，或用掃描槍搭配主頁面。');
+      showCenter('warn', '此瀏覽器不支援相機', '請改用下方「手動輸入」，或用掃描槍。');
       $('manualRow').classList.add('show'); $('manualToggle').classList.add('on');
       return;
     }
     showCenter('warn', '正在啟動相機…', '請允許瀏覽器使用相機權限');
 
-    // 限制解析度並加入連續對焦參數
     navigator.mediaDevices.getUserMedia({ 
       video: { 
         facingMode: { ideal: 'environment' },
@@ -350,43 +336,46 @@
         height: { ideal: 720 },
         advanced: [{ focusMode: "continuous" }]
       } 
-    })
-      .then(function (stream) {
-        mediaStream = stream;
-        var video = $('video');
-        video.srcObject = stream;
-        var playPromise = video.play();
-        if (playPromise && playPromise.catch) playPromise.catch(function () {});
-        hideCenter();
+    }).then(function (stream) {
+      mediaStream = stream;
+      var video = $('video');
+      video.srcObject = stream;
+      var playPromise = video.play();
+      if (playPromise && playPromise.catch) playPromise.catch(function () {});
+      hideCenter();
 
-        var nativeOk = false, testDetector;
-        if ('BarcodeDetector' in window) {
-          try {
-            testDetector = new window.BarcodeDetector({
-              formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar', 'qr_code']
-            });
-            nativeOk = true;
-          } catch (e) { nativeOk = false; }
-        }
-        if (nativeOk) {
-          $('debugNote').textContent = '偵測引擎：瀏覽器原生';
-          loopNativeDetect(testDetector);
-        } else {
-          $('debugNote').textContent = '正在載入掃描套件…';
-          loadZXing().then(function () {
-            var reader = new ZXing.BrowserMultiFormatReader();
-            $('debugNote').textContent = '偵測引擎：ZXing';
-            loopZXingDetect(reader);
-          }).catch(function (e) { cameraFailed(e); });
-        }
-        setInterval(function () {
-          var v = $('video');
-          $('debugNote').textContent = (nativeOk ? '偵測引擎：瀏覽器原生' : '偵測引擎：ZXing') +
-            ' 已處理 ' + debugTicks + ' 幀' +
-            ' 畫面 ' + (v.videoWidth || 0) + '×' + (v.videoHeight || 0);
-        }, 1000);
-      })
-      .catch(function (e) { cameraFailed(e); });
+      // 檢查是否支援原生 BarcodeDetector 且支援常見格式
+      if ('BarcodeDetector' in window) {
+        window.BarcodeDetector.getSupportedFormats().then(function(formats) {
+          if (formats.length > 0) {
+            var detector = new window.BarcodeDetector({ formats: formats });
+            $('debugNote').textContent = '偵測引擎：瀏覽器原生';
+            loopDetect('native', detector);
+          } else {
+            initZXingFallback();
+          }
+        }).catch(function() { initZXingFallback(); });
+      } else {
+        initZXingFallback();
+      }
+
+      function initZXingFallback() {
+        $('debugNote').textContent = '正在載入 ZXing 套件...';
+        loadZXing().then(function () {
+          // 啟用 TRY_HARDER 參數，強制加深一維條碼的辨識能力
+          var hints = new Map();
+          hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+          var reader = new ZXing.BrowserMultiFormatReader(hints);
+          $('debugNote').textContent = '偵測引擎：ZXing (深度模式)';
+          loopDetect('zxing', reader);
+        }).catch(function (e) { cameraFailed(e); });
+      }
+
+      setInterval(function () {
+        $('debugNote').innerHTML = $('debugNote').textContent.split(' ')[0] + ' (已處理 ' + debugTicks + ' 幀)';
+      }, 1000);
+
+    }).catch(function (e) { cameraFailed(e); });
   }
 
   function cameraFailed(e) {
@@ -396,7 +385,6 @@
     });
   }
 
-  /* ---------- 手動輸入 ---------- */
   $('manualToggle').onclick = function () {
     var on = $('manualRow').classList.toggle('show');
     $('manualToggle').classList.toggle('on', on);
@@ -428,20 +416,34 @@
     if (S.queue.length || S.inflight) { e.preventDefault(); e.returnValue = ''; }
   });
 
-  /* ---------- 啟動 ---------- */
   try { S.queue = JSON.parse(LS.get(LSKEY) || '[]') || []; } catch (e) { S.queue = []; }
 
-  apiGet('scanBootstrap').then(function (data) {
-    S.names = data.names || {}; S.stock = data.stock || {}; S.counts = data.counts || {};
-    S.queue.concat(S.inflight || []).forEach(function (x) { S.counts[x.code] = (S.counts[x.code] || 0) + 1; });
-    S.ready = true; render();
-    $('syncNote').textContent = '已與伺服器同步';
+  if (BASE) {
+    apiGet('scanBootstrap').then(function (data) {
+      S.names = data.names || {}; S.stock = data.stock || {}; S.counts = data.counts || {};
+      S.queue.concat(S.inflight || []).forEach(function (x) { S.counts[x.code] = (S.counts[x.code] || 0) + 1; });
+      S.ready = true; render();
+      $('syncNote').textContent = '已與伺服器同步';
+      startCamera();
+      flush();
+      setInterval(function() {
+        if (!document.hidden) {
+          apiGet('counts').then(function (serverCounts) {
+            var merged = {};
+            Object.keys(serverCounts || {}).forEach(function (c) { merged[c] = serverCounts[c]; });
+            S.queue.concat(S.inflight || []).forEach(function (x) { merged[x.code] = (merged[x.code] || 0) + 1; });
+            S.counts = merged; render();
+            $('syncNote').textContent = '已與伺服器同步';
+          }).catch(function () {});
+        }
+      }, 20000);
+    }).catch(function (e) {
+      showCenter('warn', '連線失敗', (e && e.message) || '無法連上盤點系統，請確認網路連線後重新整理頁面。');
+    });
+  } else {
+    // 沒參數就純開相機，用來 debug 條碼有沒有辦法被解析
     startCamera();
-    flush();
-    setInterval(pollCounts, 20000);
-  }).catch(function (e) {
-    showCenter('warn', '連線失敗', (e && e.message) || '無法連上盤點系統，請確認網路連線後重新整理頁面。');
-  });
+  }
 })();
 </script>
 </body>
