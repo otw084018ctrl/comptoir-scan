@@ -358,7 +358,6 @@
     
     html5QrCode = new Html5Qrcode("reader");
 
-    // 1. 拿掉 qrbox，讓它掃描「全畫面」；提升 FPS 增加抓到清晰瞬間的機率
     var config = { 
       fps: 15,  
       experimentalFeatures: {
@@ -366,12 +365,12 @@
       }
     };
 
-    // 2. 強制要求瀏覽器開啟「高畫質 (FHD)」與「連續自動對焦」
+    // 拿掉強制的 min，改用 ideal (理想值)，讓手機直拿時不會報錯
+    // 拿掉可能導致 Safari 崩潰的 advanced focusMode，現代手機大多會自動對焦
     var cameraConstraints = {
       facingMode: "environment",
-      width: { ideal: 1920, min: 1280 }, // 強制要求至少 720p，理想是 1080p
-      height: { ideal: 1080, min: 720 },
-      advanced: [{ focusMode: "continuous" }] // 呼叫底層的連續對焦馬達
+      width: { ideal: 1920 },
+      height: { ideal: 1080 }
     };
 
     html5QrCode.start(
@@ -386,7 +385,8 @@
     ).then(function() {
       hideCenter();
     }).catch(function(err) {
-      showCenter('warn', '無法開啟相機', '請確認權限，或改用下方「手動輸入」。', '改用手動輸入', function () {
+      console.error("相機啟動失敗:", err); // 在開發者工具留個紀錄
+      showCenter('warn', '無法開啟相機', '請確認相機權限是否已開啟，或改用下方「手動輸入」。', '改用手動輸入', function () {
         hideCenter(); $('manualRow').classList.add('show'); $('manualToggle').classList.add('on'); $('manualInput').focus();
       });
     });
