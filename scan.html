@@ -23,10 +23,12 @@
 
   .veil { position: fixed; inset: 0; box-shadow: inset 0 0 0 2000px rgba(0,0,0,.35); pointer-events: none; z-index: 2; }
   .frame { position: fixed; left: 8%; right: 8%; top: 50%; height: var(--frame-h); transform: translateY(-50%);
-    border: 2.5px solid rgba(255,255,255,.9); border-radius: 18px; z-index: 3; pointer-events: none; }
-  .frame::before, .frame::after { content: ''; position: absolute; width: 28px; height: 28px; border-color: var(--over); border-style: solid; }
+    border: 2.5px solid rgba(255,255,255,.9); border-radius: 18px; z-index: 3; pointer-events: none; transition: border-color .15s; }
+  .frame.hit { border-color: var(--good); }
+  .frame::before, .frame::after { content: ''; position: absolute; width: 28px; height: 28px; border-color: var(--over); border-style: solid; transition: border-color .15s; }
   .frame::before { left: -2.5px; top: -2.5px; border-width: 4px 0 0 4px; border-top-left-radius: 14px; }
   .frame::after { right: -2.5px; bottom: -2.5px; border-width: 0 4px 4px 0; border-bottom-right-radius: 14px; }
+  .frame.hit::before, .frame.hit::after { border-color: var(--good); }
   .scanline { position: fixed; left: 10%; right: 10%; height: 2px; z-index: 3; top: calc(50% - var(--frame-h) / 2 + 6px);
     background: linear-gradient(90deg, transparent, var(--over), transparent); animation: sweep 2s ease-in-out infinite; pointer-events: none; }
   @keyframes sweep {
@@ -67,14 +69,27 @@
   .center-msg p { margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; max-width: 320px; }
   .center-msg button { margin-top: 6px; padding: 12px 22px; border-radius: 999px; border: 1px solid rgba(255,255,255,.35); background: rgba(255,255,255,.12); font-weight: 700; }
 
-  .toast { position: fixed; left: 50%; top: 16%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 8px;
-    padding: 11px 18px; border-radius: 999px; font-size: 14px; font-weight: 700; opacity: 0; transition: opacity .18s; max-width: 84%; }
+  .toast { position: fixed; left: 50%; top: 16%; transform: translateX(-50%); z-index: 6; display: flex; align-items: flex-start; gap: 8px;
+    padding: 11px 16px; border-radius: 18px; font-size: 14px; font-weight: 700; opacity: 0; transition: opacity .18s; max-width: 84%; text-align: left; }
   .toast.show { opacity: 1; }
   .toast.ok { background: rgba(12,163,12,.94); }
   .toast.warn { background: rgba(250,178,25,.94); color: #241900; }
   .toast.bad { background: rgba(208,59,59,.94); }
-  .toast svg { width: 15px; height: 15px; flex: none; }
-  .toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toast svg { width: 15px; height: 15px; flex: none; margin-top: 2px; }
+  .toast .ttxt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .toast .tline1 { word-break: break-word; line-height: 1.3; }
+  .toast .tline2 { font-size: 12.5px; font-weight: 600; opacity: .85; white-space: nowrap; }
+
+  /* ---------- 最近掃描（快速撤銷）---------- */
+  .recent-strip { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 8px; padding-bottom: 1px; -webkit-overflow-scrolling: touch; }
+  .recent-strip::-webkit-scrollbar { display: none; }
+  .recent-chip { flex: none; display: flex; align-items: center; gap: 6px; max-width: 44vw; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 6px 6px 12px; font-size: 12px; backdrop-filter: blur(8px); }
+  .recent-chip.bad { border-color: rgba(208,59,59,.55); }
+  .recent-chip .rc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recent-chip .rc-undo { flex: none; width: 21px; height: 21px; border-radius: 50%; background: rgba(255,255,255,.16);
+    display: flex; align-items: center; justify-content: center; }
+  .recent-chip .rc-undo svg { width: 10px; height: 10px; }
 
   .bottom { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
     background: linear-gradient(transparent, rgba(0,0,0,.6)); }
@@ -127,6 +142,7 @@
 </div>
 
 <div class="bottom">
+  <div class="recent-strip" id="recentStrip" hidden></div>
   <div class="stats-row">
     <div class="stat-pill"><b id="stTotal">0</b><span>這次已掃件數</span></div>
     <div class="stat-pill"><b id="stSku">0</b><span>款數</span></div>
@@ -181,7 +197,7 @@
   }
   function hideCenter() { $('centerMsg').classList.remove('show'); }
 
-  var S = { names: {}, stock: {}, counts: {}, queue: [], inflight: null, ready: false, lastCode: null, lastAt: 0 };
+  var S = { names: {}, stock: {}, counts: {}, queue: [], inflight: null, ready: false, lastCode: null, lastAt: 0, recent: [] };
   var LSKEY = 'camq_' + LOC;
   var LS = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -213,12 +229,20 @@
     if (kind === 'ok' && navigator.vibrate) navigator.vibrate(30);
   }
 
+  function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+  // line1（品名）獨立一行、太長會換行而不是被截斷看不到；
+  // line2（應有／已掃數量）永遠完整顯示在自己的一行，不會被長品名擠到看不見。
   var toastTimer;
-  function toast(kind, msg) {
+  function toast(kind, line1, line2) {
     var t = $('toast');
     t.className = 'toast show ' + kind;
-    t.innerHTML = (kind === 'ok' ? ICON.check : kind === 'warn' ? ICON.warn : ICON.cross) + '<span>' + msg + '</span>';
-    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.className = 'toast'; }, 1100);
+    var html = (kind === 'ok' ? ICON.check : kind === 'warn' ? ICON.warn : ICON.cross) +
+      '<span class="ttxt"><span class="tline1">' + escapeHtml(line1) + '</span>';
+    if (line2) html += '<span class="tline2">' + escapeHtml(line2) + '</span>';
+    html += '</span>';
+    t.innerHTML = html;
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.className = 'toast'; }, 1600);
   }
 
   function render() {
@@ -228,7 +252,66 @@
     var pend = S.queue.length + (S.inflight ? S.inflight.length : 0);
     $('stPend').textContent = pend;
     $('stPendBox').style.color = pend > 0 ? '#fab219' : '';
+    renderRecent();
   }
+
+  /* ---------- 最近掃描（這個 session 內）＋快速撤銷 ---------- */
+  var RECENT_MAX = 6;
+  function pushRecent(item) {
+    S.recent.unshift(item);
+    if (S.recent.length > RECENT_MAX) S.recent.length = RECENT_MAX;
+  }
+  function removeFromRecent(id) {
+    S.recent = S.recent.filter(function (r) { return r.id !== id; });
+  }
+  function renderRecent() {
+    var box = $('recentStrip');
+    if (!S.recent.length) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    box.innerHTML = S.recent.map(function (r) {
+      return '<div class="recent-chip' + (r.known === false ? ' bad' : '') + '">' +
+        '<span class="rc-name">' + escapeHtml(r.name) + '</span>' +
+        '<button type="button" class="rc-undo" data-id="' + escapeHtml(r.id) + '">' + ICON.cross + '</button>' +
+        '</div>';
+    }).join('');
+  }
+  function findById(arr, id) {
+    if (!arr) return -1;
+    for (var i = 0; i < arr.length; i++) if (arr[i].id === id) return i;
+    return -1;
+  }
+  // 快速撤銷：還沒送出的直接從本地佇列拿掉；已經送出但還在等回應的，標記等回應後再撤銷；
+  // 已經同步到伺服器的，直接呼叫伺服器的 undoScan——三種情況都可能發生，取決於網路快慢。
+  function undoRecent(id) {
+    var item = S.recent.filter(function (r) { return r.id === id; })[0];
+    if (!item) return;
+    var qi = findById(S.queue, id);
+    if (qi >= 0) {
+      S.queue.splice(qi, 1);
+      S.counts[item.code] = Math.max(0, (S.counts[item.code] || 1) - 1);
+      persist(); removeFromRecent(id); render();
+      return;
+    }
+    var ii = findById(S.inflight, id);
+    if (ii >= 0) {
+      S.inflight[ii].undone = true;
+      S.counts[item.code] = Math.max(0, (S.counts[item.code] || 1) - 1);
+      removeFromRecent(id); render();
+      return;
+    }
+    apiPost({ token: TOKEN, action: 'undoScan', id: id }).then(function () {
+      S.counts[item.code] = Math.max(0, (S.counts[item.code] || 1) - 1);
+      removeFromRecent(id); render();
+      toast('warn', '已撤銷', item.name);
+    }).catch(function (e) {
+      toast('bad', '撤銷失敗', (e && e.message) || '請再試一次');
+    });
+  }
+  $('recentStrip').addEventListener('click', function (e) {
+    var btn = e.target.closest('.rc-undo');
+    if (!btn) return;
+    undoRecent(btn.getAttribute('data-id'));
+  });
 
   function persist() { LS.set(LSKEY, JSON.stringify(S.queue.concat(S.inflight || []))); }
   function apiPost(payload) {
@@ -248,9 +331,15 @@
     var batch = S.queue.splice(0, 50);
     S.inflight = batch; render();
     apiPost({ token: TOKEN, action: 'appendScans', user: WHO, scans: batch.map(function (x) { return { id: x.id, t: x.t, loc: x.loc, code: x.code, name: x.name }; }) })
-      .then(function () { S.inflight = null; persist(); render(); flush(); })
+      .then(function () {
+        var b = S.inflight; S.inflight = null;
+        // 已經送出去才按撤銷的（快速撤銷點在資料還在飛的時候），這裡補送一次真正的撤銷
+        b.forEach(function (x) { if (x.undone) apiPost({ token: TOKEN, action: 'undoScan', id: x.id }); });
+        persist(); render(); flush();
+      })
       .catch(function () {
-        S.queue = batch.concat(S.queue); S.inflight = null;
+        var b = S.inflight.filter(function (x) { return !x.undone; });
+        S.queue = b.concat(S.queue); S.inflight = null;
         persist(); render(); toast('bad', '同步失敗，將自動重試'); setTimeout(flush, 4000);
       });
   }
@@ -265,24 +354,27 @@
     var flash = $('flash'); flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
 
     if (!BASE) {
-      toast('ok', '測試掃描成功: ' + code);
+      toast('ok', '測試掃描成功', code);
       feedback('ok');
       return;
     }
 
     var name = S.names[code];
+    var known = !!name;
     S.counts[code] = (S.counts[code] || 0) + 1;
     var scan = { id: uid(), t: now, loc: LOC, code: code, name: name || '庫存表無此條碼' };
-    S.queue.push(scan); persist(); flush(); render();
+    S.queue.push(scan); persist(); flush();
+    pushRecent({ id: scan.id, code: code, name: scan.name, known: known, t: now });
+    render();
 
     if (!name) {
-      toast('bad', '查無此條碼: ' + code);
+      toast('bad', '查無此條碼', code);
       feedback('bad');
       return;
     }
     var need = S.stock[code] || 0, got = S.counts[code];
     var kind = got > need ? 'warn' : 'ok';
-    toast(kind, name + ' 已掃 ' + got + '／應有 ' + need);
+    toast(kind, name, '應有 ' + need + '／已掃 ' + got);
     feedback(kind);
   }
 
@@ -293,7 +385,7 @@
   var ZXING_WASM_DIR = ZXING_PKG + 'dist/reader/'; // .wasm 檔實際放的資料夾（跟 es/reader 不同層）
   var ZXING_FORMATS = ['Code128', 'Code39', 'EAN-13', 'EAN-8', 'UPC-A', 'UPC-E', 'ITF', 'Codabar'];
 
-  var mediaStream = null, rafId = null, nativeDetector = null, isScanning = false;
+  var mediaStream = null, activeTrack = null, rafId = null, usingVfc = false, nativeDetector = null, isScanning = false;
   var zxingLoadPromise = null;
 
   // padded = true 時，解碼範圍會比畫面上看到的白框稍微再大一圈，
@@ -412,8 +504,13 @@
   function stopCamera() {
     isScanning = false;
     hideCamTools();
-    if (rafId) cancelAnimationFrame(rafId);
+    if (rafId) {
+      var video = $('video');
+      if (usingVfc && video.cancelVideoFrameCallback) { try { video.cancelVideoFrameCallback(rafId); } catch (e) {} }
+      else cancelAnimationFrame(rafId);
+    }
     rafId = null;
+    activeTrack = null;
     if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
   }
 
@@ -443,13 +540,28 @@
       });
   }
 
+  var frameHitTimer;
+  function flashFrameHit() {
+    var f = document.querySelector('.frame');
+    f.classList.add('hit');
+    clearTimeout(frameHitTimer);
+    frameHitTimer = setTimeout(function () { f.classList.remove('hit'); }, 220);
+  }
+
   function loopDetect() {
     var video = $('video');
     var canvas = document.createElement('canvas');
     var ctx = canvas.getContext('2d', { willReadFrequently: true });
     var busy = false, lastTry = 0;
     var engineLabel = nativeDetector ? '瀏覽器原生' : 'ZXing-WASM（高精度）';
+    // requestVideoFrameCallback 在有支援的手機上，會準確地在「相機真的吐出新一幀」時才觸發，
+    // 比單純的 requestAnimationFrame（跟畫面更新頻率綁在一起、不管相機幀是否更新）更有效率。
+    usingVfc = !!video.requestVideoFrameCallback;
     isScanning = true;
+    function schedule(fn) {
+      if (usingVfc) rafId = video.requestVideoFrameCallback(fn);
+      else rafId = requestAnimationFrame(fn);
+    }
     (function tick() {
       if (!isScanning) return;
       var now = performance.now();
@@ -457,14 +569,14 @@
         if (cropToFrame(video, canvas, ctx)) {
           lastTry = now; busy = true;
           decodeSource(canvas, ctx).then(function (text) {
-            if (text) onHit(text);
+            if (text) { flashFrameHit(); onHit(text); }
             $('debugNote').textContent = '引擎：' + engineLabel + '　畫面 ' + video.videoWidth + '×' + video.videoHeight;
           }).catch(function (e) {
             $('debugNote').textContent = '解碼發生錯誤：' + ((e && e.message) || e);
           }).then(function () { busy = false; });
         }
       }
-      rafId = requestAnimationFrame(tick);
+      schedule(tick);
     })();
   }
 
@@ -517,6 +629,7 @@
       hideCenter();
 
       var track = stream.getVideoTracks()[0];
+      activeTrack = track;
       try {
         var caps = track.getCapabilities ? track.getCapabilities() : {};
         var advanced = [];
@@ -530,6 +643,17 @@
       tryNativeThenLoop();
     }).catch(function () { cameraFailed(); });
   }
+
+  // 點畫面對焦：手指點想對焦的位置，跟一般相機 App 的操作習慣一樣。
+  // 部分手機（尤其 iOS Safari）不支援 pointsOfInterest，會被 catch 靜默吃掉，不影響其他功能。
+  $('video').addEventListener('click', function (e) {
+    if (!activeTrack) return;
+    var r = e.target.getBoundingClientRect();
+    var x = (e.clientX - r.left) / r.width;
+    var y = (e.clientY - r.top) / r.height;
+    x = Math.min(1, Math.max(0, x)); y = Math.min(1, Math.max(0, y));
+    activeTrack.applyConstraints({ advanced: [{ pointsOfInterest: [{ x: x, y: y }] }] }).catch(function () {});
+  });
 
   $('captureBtn').onclick = capturePhotoAndDecode;
 
@@ -577,6 +701,18 @@
       S.queue.concat(S.inflight || []).forEach(function (x) { S.counts[x.code] = (S.counts[x.code] || 0) + 1; });
       S.ready = true; render();
       $('syncNote').textContent = '已與伺服器同步';
+
+      // 如果是重新打開這個頁面（同一輪盤點中途離開又回來），把伺服器上這個區域
+      // 最近幾筆掃描紀錄補回「最近掃描」清單，這樣「快速撤銷」也還能用。
+      apiGet('recentScans', '&limit=' + RECENT_MAX).then(function (rows) {
+        (rows || []).forEach(function (r) {
+          if (findById(S.recent, r.id) >= 0) return;
+          S.recent.push({ id: r.id, code: r.code, name: r.name || S.names[r.code] || '庫存表無此條碼', known: !!S.names[r.code], t: r.t });
+        });
+        S.recent.sort(function (a, b) { return b.t - a.t; });
+        if (S.recent.length > RECENT_MAX) S.recent.length = RECENT_MAX;
+        render();
+      }).catch(function () {});
 
       startCamera();
       flush();
