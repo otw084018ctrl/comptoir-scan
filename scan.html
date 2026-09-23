@@ -665,6 +665,12 @@
   $('manualInput').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); var v = $('manualInput').value; $('manualInput').value = ''; onHit(v); }
   });
+  $('manualInput').addEventListener('input', function () {
+    var el = $('manualInput');
+    var v = el.value;
+    var cleaned = v.replace(/[^\x00-\x7F]/g, '');
+    if (cleaned !== v) el.value = cleaned;
+  });
 
   $('closeBtn').onclick = $('doneBtn').onclick = function () {
     stopCamera();
